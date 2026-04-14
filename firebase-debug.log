@@ -1,0 +1,48 @@
+[debug] [2026-04-14T15:28:47.635Z] ----------------------------------------------------------------------
+[debug] [2026-04-14T15:28:47.637Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\Vighnesh\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js init hosting
+[debug] [2026-04-14T15:28:47.637Z] CLI Version:   15.14.0
+[debug] [2026-04-14T15:28:47.637Z] Platform:      win32
+[debug] [2026-04-14T15:28:47.637Z] Node Version:  v24.12.0
+[debug] [2026-04-14T15:28:47.637Z] Time:          Tue Apr 14 2026 20:58:47 GMT+0530 (India Standard Time)
+[debug] [2026-04-14T15:28:47.637Z] ----------------------------------------------------------------------
+[debug] 
+[info] 
+     ######## #### ########  ######## ########     ###     ######  ########
+     ##        ##  ##     ## ##       ##     ##  ##   ##  ##       ##
+     ######    ##  ########  ######   ########  #########  ######  ######
+     ##        ##  ##    ##  ##       ##     ## ##     ##       ## ##
+     ##       #### ##     ## ######## ########  ##     ##  ######  ########
+
+You're about to initialize a Firebase project in this directory:
+
+  D:\GDG_2
+
+Before we get started, keep in mind:
+
+  * You are initializing within an existing Firebase project directory
+
+[info] 
+=== Project Setup
+[info] 
+[info] First, let's associate this project directory with a Firebase project.
+[info] You can create multiple project aliases by running firebase use --add, 
+[info] 
+[debug] [2026-04-14T15:29:55.797Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-14T15:29:55.798Z] > authorizing via signed-in user (kshrutimahesh@gmail.com)
+[debug] [2026-04-14T15:29:55.799Z] Checked if tokens are valid: true, expires at: 1776184085982
+[debug] [2026-04-14T15:29:55.799Z] Checked if tokens are valid: true, expires at: 1776184085982
+[debug] [2026-04-14T15:29:55.801Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=100
+[debug] [2026-04-14T15:29:56.696Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
+[debug] [2026-04-14T15:29:56.696Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects [omitted]
+[info] 
+=== Hosting Setup
+[debug] [2026-04-14T15:30:52.815Z] Checked if tokens are valid: true, expires at: 1776184085982
+[debug] [2026-04-14T15:30:52.816Z] Checked if tokens are valid: true, expires at: 1776184085982
+[debug] [2026-04-14T15:30:52.816Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/resqnet-ba073 [none]
+[debug] [2026-04-14T15:30:53.328Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/resqnet-ba073 200
+[debug] [2026-04-14T15:30:53.328Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/resqnet-ba073 {"projectId":"resqnet-ba073","projectNumber":"119925068876","displayName":"ResQNet","name":"projects/resqnet-ba073","resources":{"hostingSite":"resqnet-ba073"},"state":"ACTIVE","etag":"1_3be79956-f9d6-43a3-8882-a84e9fc3fc69"}
+[info] 
+[info] Your public directory is the folder (relative to your project directory) that
+[info] will contain Hosting assets to be uploaded with firebase deploy. If you
+[info] have a build process for your assets, use your build's output directory.
+[info] 

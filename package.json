@@ -1,0 +1,27 @@
+{
+    "name": "resqnet-frontend",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview"
+    },
+    "dependencies": {
+        "firebase": "^12.12.0",
+        "leaflet": "^1.9.4",
+        "lucide-react": "^0.470.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "react-leaflet": "^5.0.0",
+        "react-router-dom": "^6.18.0"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-react": "^4.3.1",
+        "autoprefixer": "^10.4.19",
+        "postcss": "^8.4.35",
+        "tailwindcss": "^3.4.4",
+        "vite": "^5.4.1"
+    }
+}

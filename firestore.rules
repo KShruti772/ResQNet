@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userOrgId() {
+      return userDoc().organizationId;
+    }
+
+    function isSameOrg(orgId) {
+      return orgId == userOrgId();
+    }
+
+    match /users/{userId} {
+      allow read, update, delete: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /organizations/{orgId} {
+      allow read: if isSignedIn() && isSameOrg(orgId);
+      allow create: if isSignedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /emergencies/{emergencyId} {
+      allow read: if isSignedIn() && isSameOrg(resource.data.organizationId);
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.organizationId == userOrgId()
+        && request.resource.data.status is string
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if isSignedIn()
+        && isSameOrg(resource.data.organizationId)
+        && request.resource.data.organizationId == resource.data.organizationId;
+    }
+  }
+}
