@@ -1,12 +1,40 @@
 // Utility functions for emergency system
+export const normalizeOrganizationId = (organizationId = '') => {
+    return organizationId.trim().toLowerCase().replace(/\s+/g, '_')
+}
+
+export const normalizeEmergencyStatus = (status = 'pending') => {
+    const normalized = String(status).trim().toLowerCase()
+
+    if (normalized === 'in progress') {
+        return 'in_progress'
+    }
+
+    return normalized || 'pending'
+}
+
+export const formatEmergencyStatus = (status = 'pending') => {
+    const normalized = normalizeEmergencyStatus(status)
+
+    if (normalized === 'in_progress') {
+        return 'In Progress'
+    }
+
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
 export const getPriority = (emergencyType) => {
+    const type = typeof emergencyType === 'string'
+        ? emergencyType
+        : emergencyType?.emergencyType || emergencyType?.type
+
     const priorities = {
         'Fire': 'High',
         'Medical': 'High',
         'Security': 'Medium',
         'General': 'Low'
     }
-    return priorities[emergencyType] || 'Low'
+    return priorities[type] || 'Low'
 }
 
 export const getPriorityColor = (priority) => {
@@ -51,11 +79,11 @@ export const playAlertSound = () => {
 export const getStatusSteps = () => [
     { key: 'pending', label: 'Pending', color: 'bg-yellow-500' },
     { key: 'accepted', label: 'Accepted', color: 'bg-blue-500' },
-    { key: 'in progress', label: 'In Progress', color: 'bg-orange-500' },
+    { key: 'in_progress', label: 'In Progress', color: 'bg-orange-500' },
     { key: 'resolved', label: 'Resolved', color: 'bg-emerald-500' }
 ]
 
 export const getCurrentStatusIndex = (status) => {
     const steps = getStatusSteps()
-    return steps.findIndex(step => step.key === status)
+    return steps.findIndex(step => step.key === normalizeEmergencyStatus(status))
 }

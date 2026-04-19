@@ -4,6 +4,8 @@ import { AtSign, Lock } from 'lucide-react'
 import { signInWithEmailAndPassword } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../firebase.js'
+import { storeOrganizationId } from '../utils/emergencyService.js'
+import { normalizeOrganizationId } from '../utils/emergencyUtils.js'
 
 function LoginPage() {
     const [form, setForm] = useState({ email: '', password: '' })
@@ -34,9 +36,15 @@ function LoginPage() {
             const userSnap = await getDoc(userRef)
             const data = userSnap.exists() ? userSnap.data() : null
             const role = data?.role || 'user'
-            const orgId = data?.organizationId
+            const orgId = normalizeOrganizationId(data?.organizationId || '')
             console.log('Login Step 3: Role fetched:', role)
             console.log('Login Step 3.5: OrgId fetched:', orgId)
+
+            if (orgId) {
+                storeOrganizationId(orgId)
+            } else {
+                storeOrganizationId('')
+            }
 
             if (!orgId) {
                 console.log('Login Step 4: No orgId, redirecting to organization setup')

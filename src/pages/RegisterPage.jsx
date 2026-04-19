@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, ShieldAlert, User, Users } from 'lucide-react'
 import { createUserWithEmailAndPassword } from 'firebase/auth'
-import { doc, setDoc } from 'firebase/firestore'
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
 import RoleCard from '../components/RoleCard.jsx'
 import { auth, db } from '../firebase.js'
 
@@ -59,12 +59,13 @@ function RegisterPage() {
             const credential = await createUserWithEmailAndPassword(auth, form.email, form.password)
             console.log('Step 2: User created')
             await setDoc(doc(db, 'users', credential.user.uid), {
+                uid: credential.user.uid,
                 fullName: form.fullName,
                 email: form.email,
                 phone: form.phone,
                 role,
-                organizationId: null,
-                createdAt: new Date(),
+                organizationId: '',
+                createdAt: serverTimestamp(),
             })
             console.log('Step 3: Firestore saved')
             setFeedback(`Account created for ${role.toUpperCase()}. Please log in.`)

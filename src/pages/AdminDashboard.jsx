@@ -1,60 +1,219 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, doc, onSnapshot, updateDoc, query, where, getDoc, addDoc } from 'firebase/firestore'
-import { auth, db } from '../firebase.js'
 import { useUser } from '../UserContext.jsx'
 import Toast from '../components/Toast.jsx'
 import Spinner from '../components/Spinner.jsx'
 import EmergencyMap from '../components/EmergencyMap.jsx'
 import StatusTimeline from '../components/StatusTimeline.jsx'
-import { getPriority, getPriorityColor, getResponseTime, playAlertSound } from '../utils/emergencyUtils.js'
+import {
+    formatEmergencyStatus,
+    getPriority,
+    getPriorityColor,
+    getResponseTime,
+    normalizeOrganizationId,
+    playAlertSound
+} from '../utils/emergencyUtils.js'
+import {
+    assignEmergencyToStaff,
+    createEmergency,
+    fetchEmergencies,
+    fetchOrganizationStaff,
+    updateEmergencyStatus
+} from '../utils/emergencyService.js'
 
 function AdminDashboard() {
     const [emergencies, setEmergencies] = useState([])
     const [error, setError] = useState('')
     const [filter, setFilter] = useState('all')
-    const { user } = useUser()
+    const [stableOrgId, setStableOrgId] = useState(null)
+    const [staffOptions, setStaffOptions] = useState([])
+    const [assignmentSelections, setAssignmentSelections] = useState({})
+    const { user, userData, loading: authLoading } = useUser()
     const navigate = useNavigate()
     const [toast, setToast] = useState(null)
+    const previousCountRef = useRef(0)
+    const normalizedOrgId = normalizeOrganizationId(userData?.organizationId || '')
 
     useEffect(() => {
-        if (user && !user.organizationId) {
+        if (normalizedOrgId && normalizedOrgId !== stableOrgId) {
+            setStableOrgId(normalizedOrgId)
+        }
+
+        if (!normalizedOrgId && stableOrgId) {
+            setStableOrgId(null)
+        }
+    }, [normalizedOrgId, stableOrgId])
+
+    useEffect(() => {
+        if (!authLoading && user && !normalizedOrgId) {
+            console.log('Admin Dashboard: No organization setup, redirecting')
             navigate('/organization-setup')
         }
-    }, [user, navigate])
+    }, [authLoading, user, normalizedOrgId, navigate])
 
     useEffect(() => {
-        if (!user?.organizationId) return
+        if (authLoading || !stableOrgId || !user?.uid || !userData) {
+            console.log('Admin Dashboard: Waiting for stable orgId + auth + userData', {
+                stableOrgId,
+                userId: user?.uid,
+                userData: userData ? 'loaded' : 'missing'
+            })
+            return
+        }
 
-        const q = query(collection(db, 'emergencies'), where('organizationId', '==', user.organizationId))
-        const unsubscribe = onSnapshot(
-            q,
-            (snapshot) => {
-                const newEmergencies = snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }))
-                const prevCount = emergencies.length
-                setEmergencies(newEmergencies)
-                if (newEmergencies.length > prevCount) {
-                    playAlertSound()
-                    setToast({ message: '🚨 New Emergency Reported', type: 'warning' })
-                }
-            },
-            () => {
-                setError('Unable to load emergency alerts.')
-            }
-        )
-        return unsubscribe
-    }, [user])
+        console.log('Using stable orgId:', stableOrgId)
 
-    const updateStatus = async (id, status) => {
+        console.log('Admin Dashboard: Setting up query for organization:', stableOrgId, {
+            userId: user.uid,
+            stableOrgId
+        })
+
         try {
-            await updateDoc(doc(db, 'emergencies', id), { status })
+            const unsubscribe = fetchEmergencies({
+                organizationId: stableOrgId,
+                onNext: (emergencies) => {
+                    console.log('Admin Dashboard: Received emergencies', {
+                        count: (emergencies || []).length,
+                        stableOrgId
+                    })
+                    setEmergencies(emergencies || [])
+                    if (previousCountRef.current > 0 && (emergencies || []).length > previousCountRef.current) {
+                        playAlertSound()
+                        setToast({ message: 'New emergency reported', type: 'warning' })
+                    }
+                    previousCountRef.current = (emergencies || []).length
+                },
+                onError: (error) => {
+                    console.error('Admin Dashboard: Firestore listener error:', error.message, { code: error.code })
+                    setError(`Unable to load emergency alerts: ${error.message}`)
+                }
+            })
+            return unsubscribe
+        } catch (err) {
+            console.error('Admin Dashboard: Query setup error:', err.message)
+            setError(`Query error: ${err.message}`)
+        }
+    }, [authLoading, stableOrgId, user?.uid, userData])
+
+    useEffect(() => {
+        if (!stableOrgId) {
+            setStaffOptions([])
+            return
+        }
+
+        let isActive = true
+
+        const loadStaffOptions = async () => {
+            try {
+                const staffUsers = await fetchOrganizationStaff(stableOrgId)
+                if (isActive) {
+                    setStaffOptions(staffUsers)
+                }
+            } catch (staffError) {
+                console.error('Admin Dashboard: Failed to load staff users', staffError)
+                if (isActive) {
+                    setError('Failed to load organization staff.')
+                }
+            }
+        }
+
+        loadStaffOptions()
+
+        return () => {
+            isActive = false
+        }
+    }, [stableOrgId])
+
+    const actor = {
+        uid: user?.uid,
+        fullName: userData?.fullName || user?.displayName || 'Admin',
+        organizationId: stableOrgId,
+        role: userData?.role || 'admin'
+    }
+
+    const handleUpdateStatus = async (id, status) => {
+        const previousEmergency = emergencies.find((emergency) => emergency.id === id)
+
+        setEmergencies((prevEmergencies) =>
+            prevEmergencies.map((emergency) =>
+                emergency.id === id
+                    ? { ...emergency, status, updatedAt: new Date() }
+                    : emergency
+            )
+        )
+
+        try {
+            await updateEmergencyStatus({
+                emergencyId: id,
+                status,
+                actor
+            })
         } catch (updateError) {
-            setError('Failed to update status. Please try again.')
+            setEmergencies((prevEmergencies) =>
+                prevEmergencies.map((emergency) =>
+                    emergency.id === id && previousEmergency
+                        ? previousEmergency
+                        : emergency
+                )
+            )
+            setError(`Failed to update status: ${updateError.message}`)
+        }
+    }
+
+    const handleAssignEmergency = async (emergency) => {
+        const selectedStaffId = assignmentSelections[emergency.id]
+        const selectedStaff = staffOptions.find((staffUser) => staffUser.uid === selectedStaffId)
+
+        if (!selectedStaff) {
+            setError('Please select a staff member before assigning.')
+            return
+        }
+
+        const previousEmergency = emergency
+
+        setEmergencies((prevEmergencies) =>
+            prevEmergencies.map((currentEmergency) =>
+                currentEmergency.id === emergency.id
+                    ? {
+                        ...currentEmergency,
+                        status: currentEmergency.status === 'pending' ? 'accepted' : currentEmergency.status,
+                        assignedStaffId: selectedStaff.uid,
+                        assignedStaffName: selectedStaff.fullName || 'Staff Member',
+                        assignedTo: selectedStaff.uid,
+                        updatedAt: new Date()
+                    }
+                    : currentEmergency
+            )
+        )
+
+        try {
+            await assignEmergencyToStaff({
+                emergencyId: emergency.id,
+                staffUser: selectedStaff,
+                actor
+            })
+            setToast({ message: 'Emergency assigned successfully', type: 'success' })
+            setError('')
+        } catch (assignError) {
+            setEmergencies((prevEmergencies) =>
+                prevEmergencies.map((currentEmergency) =>
+                    currentEmergency.id === emergency.id
+                        ? previousEmergency
+                        : currentEmergency
+                )
+            )
+            setError(`Failed to assign emergency: ${assignError.message}`)
+            setToast({ message: 'Failed to assign emergency', type: 'error' })
         }
     }
 
     const createDemoEmergency = async () => {
         try {
+            if (!stableOrgId || !user?.uid) {
+                setError('Organization ID is not set. Please set up your organization first.')
+                return
+            }
+
             const demoTypes = ['Fire', 'Medical', 'Security', 'General']
             const randomType = demoTypes[Math.floor(Math.random() * demoTypes.length)]
             const demoDescriptions = {
@@ -64,40 +223,66 @@ function AdminDashboard() {
                 'General': 'General emergency assistance needed'
             }
 
-            await addDoc(collection(db, 'emergencies'), {
-                userId: 'demo-user',
-                userName: 'Demo User',
-                phone: '+1-555-0123',
+            const latitude = 40.7128 + (Math.random() - 0.5) * 0.1
+            const longitude = -74.0060 + (Math.random() - 0.5) * 0.1
+
+            await createEmergency({
+                user: {
+                    uid: user.uid,
+                    organizationId: stableOrgId,
+                    organizationName: userData?.organizationName || 'Unknown Organization',
+                    fullName: userData?.fullName || user.displayName || 'Admin Demo',
+                    phone: userData?.phone || '',
+                    email: user.email || ''
+                },
                 emergencyType: randomType,
                 description: demoDescriptions[randomType],
-                latitude: 40.7128 + (Math.random() - 0.5) * 0.1,
-                longitude: -74.0060 + (Math.random() - 0.5) * 0.1,
-                status: 'pending',
-                assignedTo: null,
-                organizationId: user.organizationId,
-                createdAt: new Date(),
+                latitude,
+                longitude
             })
-            setToast({ message: '🎭 Demo emergency created!', type: 'success' })
+
+            console.log('Demo emergency created successfully', {
+                userId: user.uid,
+                stableOrgId,
+                type: randomType
+            })
+            setToast({ message: 'Demo emergency created', type: 'success' })
         } catch (error) {
-            setError('Failed to create demo emergency.')
+            console.error('Failed to create demo emergency:', error.message, {
+                code: error.code,
+                userId: user.uid,
+                stableOrgId
+            })
+            setError(`Failed to create demo emergency: ${error.message}`)
         }
     }
 
-    const filteredEmergencies = emergencies.filter((emergency) => {
+    const filteredEmergencies = (emergencies || []).filter((emergency) => {
         if (filter === 'all') return true
         return emergency.status === filter
     })
 
-    const total = emergencies.length
-    const active = emergencies.filter((e) => e.status !== 'resolved').length
-    const resolved = emergencies.filter((e) => e.status === 'resolved').length
-    const avgResponseTime = resolved > 0 ? Math.floor(emergencies.filter(e => e.status === 'resolved').reduce((sum, e) => sum + (Date.now() - e.createdAt.seconds * 1000) / 60000, 0) / resolved) : 0
+    const total = (emergencies || []).length
+    const active = (emergencies || []).filter((e) => e.status !== 'resolved').length
+    const resolved = (emergencies || []).filter((e) => e.status === 'resolved').length
+    const avgResponseTime = resolved > 0 ? Math.floor((emergencies || []).filter(e => e.status === 'resolved').reduce((sum, e) => sum + (Date.now() - e.createdAt.seconds * 1000) / 60000, 0) / resolved) : 0
 
     const emergenciesByType = emergencies.reduce((acc, emergency) => {
         const type = emergency.emergencyType || 'General'
         acc[type] = (acc[type] || 0) + 1
         return acc
     }, {})
+
+    if (authLoading) {
+        return (
+            <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+                <div className="text-center">
+                    <Spinner />
+                    <p className="mt-4 text-slate-300">Loading your dashboard...</p>
+                </div>
+            </div>
+        )
+    }
 
     return (
         <div className="mx-auto max-w-7xl px-6 py-10 text-slate-100">
@@ -113,10 +298,10 @@ function AdminDashboard() {
                                 <h1 className="text-3xl font-bold text-white bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
                                     Admin Dashboard
                                 </h1>
-                                <p className="text-slate-300 text-lg">{user?.organizationName || 'Organization'}</p>
+                                <p className="text-slate-300 text-lg">{userData?.organizationName || "Organization doesn't exist"}</p>
                             </div>
                         </div>
-                        <p className="text-sm text-slate-400">Emergency Management Control Center • {user?.role || 'admin'}</p>
+                        <p className="text-sm text-slate-400">Emergency Management Control Center • {userData?.role || 'admin'}</p>
                     </div>
                     <button
                         onClick={() => navigate('/organization-setup')}
@@ -160,7 +345,7 @@ function AdminDashboard() {
                         {[
                             { status: 'pending', label: 'Pending', count: emergencies.filter(e => e.status === 'pending').length, color: 'bg-yellow-500' },
                             { status: 'accepted', label: 'Accepted', count: emergencies.filter(e => e.status === 'accepted').length, color: 'bg-blue-500' },
-                            { status: 'in progress', label: 'In Progress', count: emergencies.filter(e => e.status === 'in progress').length, color: 'bg-orange-500' },
+                            { status: 'in_progress', label: 'In Progress', count: emergencies.filter(e => e.status === 'in_progress').length, color: 'bg-orange-500' },
                             { status: 'resolved', label: 'Resolved', count: emergencies.filter(e => e.status === 'resolved').length, color: 'bg-emerald-500' }
                         ].map((item) => (
                             <div key={item.status} className="flex items-center justify-between">
@@ -170,7 +355,7 @@ function AdminDashboard() {
                                 </div>
                                 <div className="flex items-center gap-3">
                                     <div className="w-24 bg-slate-700 rounded-full h-2">
-                                        <div 
+                                        <div
                                             className={`h-2 rounded-full ${item.color} transition-all duration-500`}
                                             style={{ width: `${total > 0 ? (item.count / total) * 100 : 0}%` }}
                                         ></div>
@@ -201,7 +386,7 @@ function AdminDashboard() {
                                         <span className="text-white font-bold">{count}</span>
                                     </div>
                                     <div className="w-full bg-slate-700 rounded-full h-2 mb-2">
-                                        <div 
+                                        <div
                                             className={`h-2 rounded-full ${colors[type] || 'bg-blue-500'} transition-all duration-500`}
                                             style={{ width: `${percentage}%` }}
                                         ></div>
@@ -230,7 +415,7 @@ function AdminDashboard() {
                     <p className="text-slate-300 text-sm">Current assignments and response status</p>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {emergencies.filter(e => e.assignedTo).slice(0, 6).map((emergency) => (
+                    {emergencies.filter(e => e.assignedStaffId).slice(0, 6).map((emergency) => (
                         <div key={emergency.id} className="bg-slate-950/50 rounded-lg p-4 border border-white/5">
                             <div className="flex items-center gap-3 mb-3">
                                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center">
@@ -248,18 +433,17 @@ function AdminDashboard() {
                                 </div>
                                 <div className="flex justify-between text-xs">
                                     <span className="text-slate-400">Status:</span>
-                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                        emergency.status === 'resolved' ? 'text-emerald-300 bg-emerald-500/10' :
-                                        emergency.status === 'in progress' ? 'text-orange-300 bg-orange-500/10' :
-                                        'text-blue-300 bg-blue-500/10'
-                                    }`}>
-                                        {emergency.status}
+                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${emergency.status === 'resolved' ? 'text-emerald-300 bg-emerald-500/10' :
+                                        emergency.status === 'in_progress' ? 'text-orange-300 bg-orange-500/10' :
+                                            'text-blue-300 bg-blue-500/10'
+                                        }`}>
+                                        {formatEmergencyStatus(emergency.status)}
                                     </span>
                                 </div>
                             </div>
                         </div>
                     ))}
-                    {emergencies.filter(e => e.assignedTo).length === 0 && (
+                    {emergencies.filter(e => e.assignedStaffId).length === 0 && (
                         <div className="col-span-full text-center py-8">
                             <div className="text-4xl mb-4">👥</div>
                             <p className="text-slate-300">No active staff assignments</p>
@@ -274,41 +458,37 @@ function AdminDashboard() {
                 <div className="flex flex-wrap gap-3">
                     <button
                         onClick={() => setFilter('all')}
-                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${
-                            filter === 'all' 
-                                ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/30' 
-                                : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
-                        }`}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${filter === 'all'
+                            ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/30'
+                            : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
+                            }`}
                     >
                         All Cases
                     </button>
                     <button
                         onClick={() => setFilter('pending')}
-                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${
-                            filter === 'pending' 
-                                ? 'bg-gradient-to-r from-yellow-500 to-orange-600 text-white shadow-lg shadow-yellow-500/30' 
-                                : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
-                        }`}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${filter === 'pending'
+                            ? 'bg-gradient-to-r from-yellow-500 to-orange-600 text-white shadow-lg shadow-yellow-500/30'
+                            : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
+                            }`}
                     >
                         Pending
                     </button>
                     <button
-                        onClick={() => setFilter('in progress')}
-                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${
-                            filter === 'in progress' 
-                                ? 'bg-gradient-to-r from-orange-500 to-red-600 text-white shadow-lg shadow-orange-500/30' 
-                                : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
-                        }`}
+                        onClick={() => setFilter('in_progress')}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${filter === 'in_progress'
+                            ? 'bg-gradient-to-r from-orange-500 to-red-600 text-white shadow-lg shadow-orange-500/30'
+                            : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
+                            }`}
                     >
                         In Progress
                     </button>
                     <button
                         onClick={() => setFilter('resolved')}
-                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${
-                            filter === 'resolved' 
-                                ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-lg shadow-emerald-500/30' 
-                                : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
-                        }`}
+                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 ${filter === 'resolved'
+                            ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-lg shadow-emerald-500/30'
+                            : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 border border-white/10 hover:border-white/20'
+                            }`}
                     >
                         Resolved
                     </button>
@@ -339,15 +519,14 @@ function AdminDashboard() {
                         >
                             {/* Priority Indicator */}
                             <div className="absolute top-4 right-4">
-                                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ${
-                                    getPriority(emergency) === 'Critical' 
-                                        ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg shadow-red-500/30' 
-                                        : getPriority(emergency) === 'High' 
-                                        ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30' 
-                                        : getPriority(emergency) === 'Medium' 
-                                        ? 'bg-gradient-to-r from-yellow-500 to-yellow-600 text-white shadow-lg shadow-yellow-500/30' 
-                                        : 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-lg shadow-green-500/30'
-                                }`}>
+                                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ${getPriority(emergency) === 'Critical'
+                                    ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg shadow-red-500/30'
+                                    : getPriority(emergency) === 'High'
+                                        ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30'
+                                        : getPriority(emergency) === 'Medium'
+                                            ? 'bg-gradient-to-r from-yellow-500 to-yellow-600 text-white shadow-lg shadow-yellow-500/30'
+                                            : 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-lg shadow-green-500/30'
+                                    }`}>
                                     {getPriority(emergency)}
                                 </span>
                             </div>
@@ -391,40 +570,60 @@ function AdminDashboard() {
                                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                                             <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
-                                        <span>{emergency.assignedTo || 'Unassigned'}</span>
+                                        <span>{emergency.assignedStaffName || 'Unassigned'}</span>
                                     </div>
                                 </div>
 
+                                {!emergency.assignedStaffId && staffOptions.length > 0 && (
+                                    <div className="flex gap-2">
+                                        <select
+                                            value={assignmentSelections[emergency.id] || ''}
+                                            onChange={(event) => setAssignmentSelections((prev) => ({ ...prev, [emergency.id]: event.target.value }))}
+                                            className="flex-1 rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100"
+                                        >
+                                            <option value="">Select staff</option>
+                                            {staffOptions.map((staffUser) => (
+                                                <option key={staffUser.uid} value={staffUser.uid}>
+                                                    {staffUser.fullName || staffUser.email || staffUser.uid}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <button
+                                            onClick={() => handleAssignEmergency(emergency)}
+                                            className="rounded-lg bg-gradient-to-r from-indigo-500 to-blue-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-indigo-500/30 transition-all duration-300 hover:scale-105"
+                                        >
+                                            Assign
+                                        </button>
+                                    </div>
+                                )}
+
                                 {/* Status & Actions */}
                                 <div className="flex items-center justify-between">
-                                    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${
-                                        emergency.status === 'pending' 
-                                            ? 'bg-gradient-to-r from-yellow-500/20 to-orange-500/20 text-yellow-300 border border-yellow-500/30' 
-                                            : emergency.status === 'in progress' 
-                                            ? 'bg-gradient-to-r from-orange-500/20 to-red-500/20 text-orange-300 border border-orange-500/30' 
-                                            : 'bg-gradient-to-r from-emerald-500/20 to-green-500/20 text-emerald-300 border border-emerald-500/30'
-                                    }`}>
-                                        {emergency.status.toUpperCase()}
+                                    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${emergency.status === 'pending'
+                                        ? 'bg-gradient-to-r from-yellow-500/20 to-orange-500/20 text-yellow-300 border border-yellow-500/30'
+                                        : emergency.status === 'in_progress'
+                                            ? 'bg-gradient-to-r from-orange-500/20 to-red-500/20 text-orange-300 border border-orange-500/30'
+                                            : emergency.status === 'resolved'
+                                                ? 'bg-gradient-to-r from-emerald-500/20 to-green-500/20 text-emerald-300 border border-emerald-500/30'
+                                                : 'bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-300 border border-blue-500/30'
+                                        }`}>
+                                        {formatEmergencyStatus(emergency.status)}
                                     </span>
                                     <div className="flex gap-2">
-                                        <button
-                                            onClick={() => updateEmergencyStatus(emergency.id, 'in progress')}
-                                            className="rounded-lg bg-gradient-to-r from-blue-500 to-cyan-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-blue-500/30 transition-all duration-300 hover:scale-105 hover:shadow-blue-500/50"
-                                        >
-                                            Start
-                                        </button>
-                                        <button
-                                            onClick={() => updateEmergencyStatus(emergency.id, 'resolved')}
-                                            className="rounded-lg bg-gradient-to-r from-emerald-500 to-green-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-emerald-500/50"
-                                        >
-                                            Resolve
-                                        </button>
+                                        {emergency.status !== 'resolved' && (
+                                            <button
+                                                onClick={() => handleUpdateStatus(emergency.id, emergency.status === 'accepted' ? 'in_progress' : 'resolved')}
+                                                className="rounded-lg bg-gradient-to-r from-blue-500 to-cyan-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-blue-500/30 transition-all duration-300 hover:scale-105 hover:shadow-blue-500/50"
+                                            >
+                                                {emergency.status === 'accepted' ? 'Start' : 'Resolve'}
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
                                 {/* Timeline */}
                                 <div className="mt-4">
-                                    <StatusTimeline emergency={emergency} />
+                                    <StatusTimeline status={emergency.status} />
                                 </div>
                             </div>
                         </div>

@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { doc, setDoc, addDoc, collection, getDoc, query, where, getDocs } from 'firebase/firestore'
-import { auth, db } from '../firebase.js'
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore'
+import { db } from '../firebase.js'
 import { useUser } from '../UserContext.jsx'
+import { storeOrganizationId } from '../utils/emergencyService.js'
+import { normalizeOrganizationId } from '../utils/emergencyUtils.js'
 
 function OrganizationSetup() {
     const [mode, setMode] = useState('create')
@@ -10,7 +12,7 @@ function OrganizationSetup() {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
     const navigate = useNavigate()
-    const { updateUser } = useUser()
+    const { user, userData, loading: userLoading, updateUser } = useUser()
 
     const handleChange = (event) => {
         setForm({ ...form, [event.target.name]: event.target.value })
@@ -30,49 +32,63 @@ function OrganizationSetup() {
         setLoading(true)
 
         try {
+            if (!user?.uid) {
+                setError('Please log in before managing organization access.')
+                return
+            }
+
             if (mode === 'join') {
-                // Search for organization by name
-                const q = query(collection(db, 'organizations'), where('name', '==', form.name))
-                const querySnapshot = await getDocs(q)
-                if (querySnapshot.empty) {
-                    setError('Organization not found. Please check the name or create a new one.')
-                    setLoading(false)
+                const orgId = normalizeOrganizationId(form.name)
+                console.log('Entered:', form.name)
+                console.log('Normalized:', orgId)
+
+                const orgRef = doc(db, 'organizations', orgId)
+                const orgSnap = await getDoc(orgRef)
+
+                if (!orgSnap.exists()) {
+                    setError("Organization doesn't exist")
                     return
                 }
-                const orgDoc = querySnapshot.docs[0] // Take first match
-                const orgId = orgDoc.id
-                const orgData = orgDoc.data()
 
-                // Update user with organizationId
-                await setDoc(doc(db, 'users', auth.currentUser.uid), {
+                const orgData = orgSnap.data()
+
+                storeOrganizationId(orgId)
+                await setDoc(doc(db, 'users', user.uid), {
+                    uid: user.uid,
                     organizationId: orgId
                 }, { merge: true })
 
-                // Update context
                 updateUser({ organizationId: orgId, organizationName: orgData.name })
             } else {
-                // Create organization
-                const orgRef = await addDoc(collection(db, 'organizations'), {
-                    name: form.name,
+                const orgId = normalizeOrganizationId(form.name)
+
+                const existingOrg = await getDoc(doc(db, "organizations", orgId));
+                if (existingOrg.exists()) {
+                    setError('Organization already exists. Please join instead.')
+                    return
+                }
+
+                await setDoc(doc(db, 'organizations', orgId), {
+                    organizationId: orgId,
+                    name: form.name.trim(),
                     type: form.type,
-                    location: form.location,
-                    contact: form.contact,
-                    description: form.description,
-                    createdBy: auth.currentUser.uid,
-                    createdAt: new Date(),
+                    location: form.location.trim(),
+                    contact: form.contact.trim(),
+                    description: form.description.trim(),
+                    createdBy: user.uid,
+                    createdAt: serverTimestamp(),
                 })
 
-                // Update user with organizationId
-                await setDoc(doc(db, 'users', auth.currentUser.uid), {
-                    organizationId: orgRef.id
+                storeOrganizationId(orgId)
+                await setDoc(doc(db, 'users', user.uid), {
+                    uid: user.uid,
+                    organizationId: orgId
                 }, { merge: true })
 
-                // Update context
-                updateUser({ organizationId: orgRef.id, organizationName: form.name })
+                updateUser({ organizationId: orgId, organizationName: form.name.trim() })
             }
 
-            // Fetch user role and navigate
-            const userSnap = await getDoc(doc(db, 'users', auth.currentUser.uid))
+            const userSnap = await getDoc(doc(db, 'users', user.uid))
             const userData = userSnap.data()
             const role = userData?.role || 'user'
 
@@ -91,11 +107,26 @@ function OrganizationSetup() {
         }
     }
 
+    if (userLoading) {
+        return (
+            <div className="mx-auto max-w-4xl px-6 py-12">
+                <div className="rounded-[2rem] border border-white/10 bg-slate-900/90 p-8 shadow-soft">
+                    <p className="text-slate-300">Loading organization access...</p>
+                </div>
+            </div>
+        )
+    }
+
     return (
         <div className="mx-auto max-w-4xl px-6 py-12">
             <div className="rounded-[2rem] border border-white/10 bg-slate-900/90 p-8 shadow-soft">
                 <h1 className="text-3xl font-semibold text-white">Organization Setup</h1>
                 <p className="mt-2 text-slate-300">Create a new organization or join an existing one.</p>
+                {userData?.organizationMissing && (
+                    <p className="mt-4 rounded-3xl bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                        Organization doesn't exist
+                    </p>
+                )}
 
                 <div className="mt-6 flex gap-4">
                     <button

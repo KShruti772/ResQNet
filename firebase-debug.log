@@ -1,48 +1,66 @@
-[debug] [2026-04-14T15:28:47.635Z] ----------------------------------------------------------------------
-[debug] [2026-04-14T15:28:47.637Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\Vighnesh\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js init hosting
-[debug] [2026-04-14T15:28:47.637Z] CLI Version:   15.14.0
-[debug] [2026-04-14T15:28:47.637Z] Platform:      win32
-[debug] [2026-04-14T15:28:47.637Z] Node Version:  v24.12.0
-[debug] [2026-04-14T15:28:47.637Z] Time:          Tue Apr 14 2026 20:58:47 GMT+0530 (India Standard Time)
-[debug] [2026-04-14T15:28:47.637Z] ----------------------------------------------------------------------
+[debug] [2026-04-16T09:45:05.915Z] ----------------------------------------------------------------------
+[debug] [2026-04-16T09:45:05.920Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\Vighnesh\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only firestore:rules
+[debug] [2026-04-16T09:45:05.921Z] CLI Version:   15.14.0
+[debug] [2026-04-16T09:45:05.921Z] Platform:      win32
+[debug] [2026-04-16T09:45:05.921Z] Node Version:  v24.12.0
+[debug] [2026-04-16T09:45:05.922Z] Time:          Thu Apr 16 2026 15:15:05 GMT+0530 (India Standard Time)
+[debug] [2026-04-16T09:45:05.922Z] ----------------------------------------------------------------------
 [debug] 
+[debug] [2026-04-16T09:45:10.402Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-16T09:45:10.404Z] > authorizing via signed-in user (kshrutimahesh@gmail.com)
+[debug] [2026-04-16T09:45:10.404Z] [iam] checking project resqnet-ba073 for permissions ["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]
+[debug] [2026-04-16T09:45:10.407Z] Checked if tokens are valid: false, expires at: 1776328856058
+[debug] [2026-04-16T09:45:10.407Z] Checked if tokens are valid: false, expires at: 1776328856058
+[debug] [2026-04-16T09:45:10.408Z] > refreshing access token with scopes: []
+[debug] [2026-04-16T09:45:10.412Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-04-16T09:45:10.412Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-04-16T09:45:10.775Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-04-16T09:45:10.776Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-04-16T09:45:10.787Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/resqnet-ba073:testIamPermissions [none]
+[debug] [2026-04-16T09:45:10.787Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/resqnet-ba073:testIamPermissions  x-goog-user-project=resqnet-ba073
+[debug] [2026-04-16T09:45:10.787Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/resqnet-ba073:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]}
+[debug] [2026-04-16T09:45:12.831Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/resqnet-ba073:testIamPermissions 200
+[debug] [2026-04-16T09:45:12.831Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/resqnet-ba073:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]}
 [info] 
-     ######## #### ########  ######## ########     ###     ######  ########
-     ##        ##  ##     ## ##       ##     ##  ##   ##  ##       ##
-     ######    ##  ########  ######   ########  #########  ######  ######
-     ##        ##  ##    ##  ##       ##     ## ##     ##       ## ##
-     ##       #### ##     ## ######## ########  ##     ##  ######  ########
-
-You're about to initialize a Firebase project in this directory:
-
-  D:\GDG_2
-
-Before we get started, keep in mind:
-
-  * You are initializing within an existing Firebase project directory
-
+[info] === Deploying to 'resqnet-ba073'...
 [info] 
-=== Project Setup
-[info] 
-[info] First, let's associate this project directory with a Firebase project.
-[info] You can create multiple project aliases by running firebase use --add, 
-[info] 
-[debug] [2026-04-14T15:29:55.797Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
-[debug] [2026-04-14T15:29:55.798Z] > authorizing via signed-in user (kshrutimahesh@gmail.com)
-[debug] [2026-04-14T15:29:55.799Z] Checked if tokens are valid: true, expires at: 1776184085982
-[debug] [2026-04-14T15:29:55.799Z] Checked if tokens are valid: true, expires at: 1776184085982
-[debug] [2026-04-14T15:29:55.801Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=100
-[debug] [2026-04-14T15:29:56.696Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
-[debug] [2026-04-14T15:29:56.696Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects [omitted]
-[info] 
-=== Hosting Setup
-[debug] [2026-04-14T15:30:52.815Z] Checked if tokens are valid: true, expires at: 1776184085982
-[debug] [2026-04-14T15:30:52.816Z] Checked if tokens are valid: true, expires at: 1776184085982
-[debug] [2026-04-14T15:30:52.816Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/resqnet-ba073 [none]
-[debug] [2026-04-14T15:30:53.328Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/resqnet-ba073 200
-[debug] [2026-04-14T15:30:53.328Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/resqnet-ba073 {"projectId":"resqnet-ba073","projectNumber":"119925068876","displayName":"ResQNet","name":"projects/resqnet-ba073","resources":{"hostingSite":"resqnet-ba073"},"state":"ACTIVE","etag":"1_3be79956-f9d6-43a3-8882-a84e9fc3fc69"}
-[info] 
-[info] Your public directory is the folder (relative to your project directory) that
-[info] will contain Hosting assets to be uploaded with firebase deploy. If you
-[info] have a build process for your assets, use your build's output directory.
-[info] 
+[info] i  deploying firestore 
+[info] i  firestore: ensuring required API firestore.googleapis.com is enabled... 
+[info] i  firestore: ensuring required API firestore.googleapis.com is enabled... 
+[debug] [2026-04-16T09:45:12.836Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:12.836Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:12.836Z] >>> [apiv2][query] GET https://firestore.googleapis.com/v1/projects/resqnet-ba073/databases/(default) [none]
+[debug] [2026-04-16T09:45:14.864Z] <<< [apiv2][status] GET https://firestore.googleapis.com/v1/projects/resqnet-ba073/databases/(default) 200
+[debug] [2026-04-16T09:45:14.865Z] <<< [apiv2][body] GET https://firestore.googleapis.com/v1/projects/resqnet-ba073/databases/(default) {"name":"projects/resqnet-ba073/databases/(default)","uid":"0b1f041f-3245-4f74-a285-a401f31e1d31","createTime":"2026-04-13T14:41:52.016669Z","updateTime":"2026-04-13T14:41:52.016669Z","locationId":"nam5","type":"FIRESTORE_NATIVE","concurrencyMode":"PESSIMISTIC","versionRetentionPeriod":"3600s","earliestVersionTime":"2026-04-16T08:45:13.251392Z","appEngineIntegrationMode":"DISABLED","keyPrefix":"s","pointInTimeRecoveryEnablement":"POINT_IN_TIME_RECOVERY_DISABLED","deleteProtectionState":"DELETE_PROTECTION_DISABLED","databaseEdition":"STANDARD","freeTier":true,"realtimeUpdatesMode":"REALTIME_UPDATES_MODE_ENABLED","etag":"IO6egYOL8pMDMMzhtbOJ65MD"}
+[info] i  cloud.firestore: checking firestore.rules for compilation errors... 
+[debug] [2026-04-16T09:45:14.866Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:14.866Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:14.866Z] >>> [apiv2][query] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073:test [none]
+[debug] [2026-04-16T09:45:14.866Z] >>> [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073:test [omitted]
+[debug] [2026-04-16T09:45:15.465Z] <<< [apiv2][status] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073:test 200
+[debug] [2026-04-16T09:45:15.465Z] <<< [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073:test {}
+[info] +  cloud.firestore: rules file firestore.rules compiled successfully 
+[debug] [2026-04-16T09:45:15.467Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:15.467Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:15.468Z] >>> [apiv2][query] GET https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/releases pageSize=10&pageToken=
+[debug] [2026-04-16T09:45:17.000Z] <<< [apiv2][status] GET https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/releases 200
+[debug] [2026-04-16T09:45:17.000Z] <<< [apiv2][body] GET https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/releases {"releases":[{"name":"projects/resqnet-ba073/releases/cloud.firestore","rulesetName":"projects/resqnet-ba073/rulesets/0923c5c6-03e5-4f76-9d0f-0afea4c7a44d","createTime":"2026-04-13T14:41:58.381734Z","updateTime":"2026-04-16T08:19:31.674814Z"}]}
+[debug] [2026-04-16T09:45:17.000Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:17.000Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:17.000Z] >>> [apiv2][query] GET https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets/0923c5c6-03e5-4f76-9d0f-0afea4c7a44d [none]
+[debug] [2026-04-16T09:45:18.576Z] <<< [apiv2][status] GET https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets/0923c5c6-03e5-4f76-9d0f-0afea4c7a44d 200
+[debug] [2026-04-16T09:45:18.576Z] <<< [apiv2][body] GET https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets/0923c5c6-03e5-4f76-9d0f-0afea4c7a44d [omitted]
+[info] i  firestore: uploading rules firestore.rules... 
+[debug] [2026-04-16T09:45:18.578Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:18.578Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:18.578Z] >>> [apiv2][query] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets [none]
+[debug] [2026-04-16T09:45:18.578Z] >>> [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets [omitted]
+[debug] [2026-04-16T09:45:20.168Z] <<< [apiv2][status] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets 200
+[debug] [2026-04-16T09:45:20.168Z] <<< [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/rulesets {"name":"projects/resqnet-ba073/rulesets/dbc0309b-2198-4c0f-9122-11df03ea7776","source":{"files":[{"content":"rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    function isSignedIn() {\n      return request.auth != null;\n    }\n\n    function hasCurrentUserProfile() {\n      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));\n    }\n\n    function currentUserOrgId() {\n      return hasCurrentUserProfile()\n        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.organizationId\n        : null;\n    }\n\n    function currentUserRole() {\n      return hasCurrentUserProfile()\n        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role\n        : null;\n    }\n\n    function isCurrentUser(userId) {\n      return isSignedIn() && request.auth.uid == userId;\n    }\n\n    function isOrgStaffOrAdmin() {\n      return currentUserRole() == \"staff\" || currentUserRole() == \"admin\";\n    }\n\n    match /users/{userId} {\n      allow read: if isCurrentUser(userId)\n        || (\n          hasCurrentUserProfile()\n          && isOrgStaffOrAdmin()\n          && resource.data.organizationId != null\n          && resource.data.organizationId == currentUserOrgId()\n        );\n\n      allow create: if isCurrentUser(userId)\n        && request.resource.data.uid == request.auth.uid;\n\n      allow update: if isCurrentUser(userId)\n        && request.resource.data.role == resource.data.role;\n      allow delete: if false;\n    }\n\n    match /organizations/{organizationId} {\n      allow read: if isSignedIn();\n\n      allow create: if hasCurrentUserProfile()\n        && organizationId == request.resource.data.organizationId\n        && request.resource.data.createdBy == request.auth.uid;\n\n      allow update: if hasCurrentUserProfile()\n        && (\n          resource.data.createdBy == request.auth.uid\n          || isOrgStaffOrAdmin()\n        );\n\n      allow delete: if false;\n    }\n\n    match /emergencies/{emergencyId} {\n      allow create: if hasCurrentUserProfile()\n        && request.resource.data.keys().hasAll([\n          \"userId\",\n          \"organizationId\",\n          \"userName\",\n          \"location\",\n          \"status\",\n          \"createdAt\"\n        ])\n        && request.resource.data.userId == request.auth.uid\n        && request.resource.data.organizationId != null\n        && request.resource.data.organizationId == currentUserOrgId()\n        && request.resource.data.status == \"pending\";\n\n      allow read: if isSignedIn() &&\n        (\n          resource.data.userId == request.auth.uid ||\n          (\n            hasCurrentUserProfile()\n            && resource.data.organizationId != null\n            && resource.data.organizationId == currentUserOrgId()\n          )\n        );\n\n      allow update: if hasCurrentUserProfile()\n        && isOrgStaffOrAdmin()\n        && resource.data.organizationId != null\n        && resource.data.organizationId == currentUserOrgId()\n        && request.resource.data.organizationId == resource.data.organizationId\n        && request.resource.data.userId == resource.data.userId\n        && request.resource.data.createdAt == resource.data.createdAt;\n\n      allow delete: if false;\n    }\n\n  }\n}\n","name":"firestore.rules"}]},"createTime":"2026-04-16T09:45:18.522927Z","metadata":{"services":["cloud.firestore"]}}
+[debug] [2026-04-16T09:45:20.168Z] [rules] created ruleset projects/resqnet-ba073/rulesets/dbc0309b-2198-4c0f-9122-11df03ea7776
+[debug] [2026-04-16T09:45:20.169Z] [rules] releasing cloud.firestore/(default) with ruleset projects/resqnet-ba073/rulesets/dbc0309b-2198-4c0f-9122-11df03ea7776
+[debug] [2026-04-16T09:45:20.170Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:20.170Z] Checked if tokens are valid: true, expires at: 1776336309776
+[debug] [2026-04-16T09:45:20.170Z] >>> [apiv2][query] PATCH https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/releases/cloud.firestore/(default) [none]
+[debug] [2026-04-16T09:45:20.170Z] >>> [apiv2][body] PATCH https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/releases/cloud.firestore/(default) {"release":{"name":"projects/resqnet-ba073/releases/cloud.firestore/(default)","rulesetName":"projects/resqnet-ba073/rulesets/dbc0309b-2198-4c0f-9122-11df03ea7776"}}
+[debug] [2026-04-16T09:45:21.913Z] <<< [apiv2][status] PATCH https://firebaserules.googleapis.com/v1/projects/resqnet-ba073/releases/cloud.firestore/(default) 200

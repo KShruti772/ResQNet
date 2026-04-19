@@ -5,39 +5,98 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function userDoc() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    function hasCurrentUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    function userOrgId() {
-      return userDoc().organizationId;
+    function currentUserOrgId() {
+      return hasCurrentUserProfile()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.organizationId
+        : null;
     }
 
-    function isSameOrg(orgId) {
-      return orgId == userOrgId();
+    function currentUserRole() {
+      return hasCurrentUserProfile()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    function isCurrentUser(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isOrgStaffOrAdmin() {
+      return currentUserRole() == "staff" || currentUserRole() == "admin";
     }
 
     match /users/{userId} {
-      allow read, update, delete: if isSignedIn() && request.auth.uid == userId;
-      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isCurrentUser(userId)
+        || (
+          hasCurrentUserProfile()
+          && isOrgStaffOrAdmin()
+          && resource.data.organizationId != null
+          && resource.data.organizationId == currentUserOrgId()
+        );
+
+      allow create: if isCurrentUser(userId)
+        && request.resource.data.uid == request.auth.uid;
+
+      allow update: if isCurrentUser(userId)
+        && request.resource.data.role == resource.data.role;
+      allow delete: if false;
     }
 
-    match /organizations/{orgId} {
-      allow read: if isSignedIn() && isSameOrg(orgId);
-      allow create: if isSignedIn() && request.resource.data.createdBy == request.auth.uid;
-      allow update, delete: if false;
+    match /organizations/{organizationId} {
+      allow read: if isSignedIn();
+
+      allow create: if hasCurrentUserProfile()
+        && organizationId == request.resource.data.organizationId
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if hasCurrentUserProfile()
+        && (
+          resource.data.createdBy == request.auth.uid
+          || isOrgStaffOrAdmin()
+        );
+
+      allow delete: if false;
     }
 
     match /emergencies/{emergencyId} {
-      allow read: if isSignedIn() && isSameOrg(resource.data.organizationId);
-      allow create: if isSignedIn()
+      allow create: if hasCurrentUserProfile()
+        && request.resource.data.keys().hasAll([
+          "userId",
+          "organizationId",
+          "userName",
+          "location",
+          "status",
+          "createdAt"
+        ])
         && request.resource.data.userId == request.auth.uid
-        && request.resource.data.organizationId == userOrgId()
-        && request.resource.data.status is string
-        && request.resource.data.createdAt is timestamp;
-      allow update, delete: if isSignedIn()
-        && isSameOrg(resource.data.organizationId)
-        && request.resource.data.organizationId == resource.data.organizationId;
+        && request.resource.data.organizationId != null
+        && request.resource.data.organizationId == currentUserOrgId()
+        && request.resource.data.status == "pending";
+
+      allow read: if isSignedIn() &&
+        (
+          resource.data.userId == request.auth.uid ||
+          (
+            hasCurrentUserProfile()
+            && resource.data.organizationId != null
+            && resource.data.organizationId == currentUserOrgId()
+          )
+        );
+
+      allow update: if hasCurrentUserProfile()
+        && isOrgStaffOrAdmin()
+        && resource.data.organizationId != null
+        && resource.data.organizationId == currentUserOrgId()
+        && request.resource.data.organizationId == resource.data.organizationId
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if false;
     }
+
   }
 }
