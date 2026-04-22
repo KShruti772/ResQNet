@@ -65,6 +65,7 @@ function RegisterPage() {
                 phone: form.phone,
                 role,
                 organizationId: '',
+                active_incidents_count: 0,
                 createdAt: serverTimestamp(),
             })
             console.log('Step 3: Firestore saved')

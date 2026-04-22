@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useUser } from '../UserContext.jsx'
 import Toast from '../components/Toast.jsx'
+import OfflineIndicator from '../components/OfflineIndicator.jsx'
 import Spinner from '../components/Spinner.jsx'
 import EmergencyMap from '../components/EmergencyMap.jsx'
 import StatusTimeline from '../components/StatusTimeline.jsx'
@@ -11,9 +12,12 @@ import {
     getPriorityColor,
     getResponseTime,
     normalizeOrganizationId,
-    playAlertSound
+    playAlertSound,
+    formatEventType,
+    formatEventTimestamp,
+    getEventIcon
 } from '../utils/emergencyUtils.js'
-import { acceptCase, fetchEmergencies, updateEmergencyStatus } from '../utils/emergencyService.js'
+import { acceptCase, fetchEmergencies, updateEmergencyStatus, updateStaffLocation } from '../utils/emergencyService.js'
 
 function StaffDashboard() {
     const [emergencies, setEmergencies] = useState([])
@@ -23,6 +27,8 @@ function StaffDashboard() {
     const { user, userData, loading: authLoading } = useUser()
     const navigate = useNavigate()
     const [toast, setToast] = useState(null)
+    const [currentBuilding, setCurrentBuilding] = useState('')
+    const [currentFloor, setCurrentFloor] = useState('')
     const previousCountRef = useRef(0)
     const normalizedOrgId = normalizeOrganizationId(userData?.organizationId || '')
 
@@ -42,6 +48,13 @@ function StaffDashboard() {
             navigate('/organization-setup')
         }
     }, [authLoading, user, normalizedOrgId, navigate])
+
+    useEffect(() => {
+        if (userData?.current_location) {
+            setCurrentBuilding(userData.current_location.building || '')
+            setCurrentFloor(userData.current_location.floor || '')
+        }
+    }, [userData])
 
     useEffect(() => {
         if (authLoading || !stableOrgId || !user?.uid || !userData) {
@@ -110,6 +123,8 @@ function StaffDashboard() {
             stableOrgId
         })
 
+        const previousEmergency = emergencies.find((emergency) => emergency.id === caseId)
+
         setEmergencies(prevEmergencies =>
             prevEmergencies.map(emergency =>
                 emergency.id === caseId
@@ -145,7 +160,7 @@ function StaffDashboard() {
             setEmergencies(prevEmergencies =>
                 prevEmergencies.map(emergency =>
                     emergency.id === caseId
-                        ? { ...emergency, status: 'pending', assignedStaffId: null, assignedStaffName: '', assignedTo: null }
+                        ? previousEmergency || emergency
                         : emergency
                 )
             )
@@ -281,14 +296,54 @@ function StaffDashboard() {
         }
     }
 
-    const displayedEmergencies = assignedOnly
+    const handleUpdateLocation = async () => {
+        if (!user?.uid) {
+            setError('Please log in to update your location.')
+            return
+        }
+
+        try {
+            await updateStaffLocation({
+                staffId: user.uid,
+                building: currentBuilding,
+                floor: currentFloor
+            })
+
+            setToast({ message: 'Current location updated', type: 'success' })
+            setError('')
+        } catch (locationError) {
+            console.error('Failed to update staff location', locationError)
+            setError(`Unable to update current location: ${locationError.message}`)
+            setToast({ message: 'Location update failed', type: 'error' })
+        }
+    }
+
+    const displayedEmergencies = (assignedOnly
         ? (emergencies || []).filter((emergency) => emergency.assignedStaffId === user?.uid)
-        : (emergencies || [])
+        : (emergencies || []))
+        .sort((a, b) => {
+            // Critical incidents first
+            if (a.is_critical && !b.is_critical) return -1
+            if (!a.is_critical && b.is_critical) return 1
+            // Then by creation time (newest first)
+            return b.createdAt?.seconds - a.createdAt?.seconds
+        })
 
     // Calculate stats for staff dashboard
     const assignedCount = emergencies.filter((emergency) => emergency.assignedStaffId === user?.uid).length
     const activeCount = displayedEmergencies.filter((e) => e.status !== 'resolved').length
     const resolvedCount = displayedEmergencies.filter((e) => e.status === 'resolved').length
+    const criticalCount = displayedEmergencies.filter((e) => e.is_critical).length
+
+    // Show critical incident alert
+    useEffect(() => {
+        if (criticalCount > 0 && !toast) {
+            setToast({
+                message: `⚠️ ${criticalCount} critical incident${criticalCount > 1 ? 's' : ''} require${criticalCount > 1 ? '' : 's'} immediate attention`,
+                type: 'error'
+            })
+        }
+    }, [criticalCount, toast])
 
     if (authLoading) {
         return (
@@ -359,6 +414,44 @@ function StaffDashboard() {
                 </div>
             </div>
 
+            {/* Staff Location Update */}
+            <div className="mt-8 rounded-xl border border-white/10 bg-gradient-to-br from-slate-900/90 to-slate-800/90 p-6 shadow-2xl backdrop-blur-sm">
+                <div className="mb-4">
+                    <h2 className="text-xl font-bold text-white">Update Your Current Location</h2>
+                    <p className="text-slate-300 text-sm">Share your floor and building so the admin can route incidents faster.</p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-200 mb-2">Building</label>
+                        <input
+                            type="text"
+                            value={currentBuilding}
+                            onChange={(e) => setCurrentBuilding(e.target.value)}
+                            placeholder="Block A"
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-200 mb-2">Floor</label>
+                        <input
+                            type="text"
+                            value={currentFloor}
+                            onChange={(e) => setCurrentFloor(e.target.value)}
+                            placeholder="3"
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
+                        />
+                    </div>
+                    <div className="flex items-end">
+                        <button
+                            onClick={handleUpdateLocation}
+                            className="w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-emerald-500/50"
+                        >
+                            Save Location
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             {/* Map Section */}
             <div className="mt-8 rounded-xl border border-white/10 bg-gradient-to-br from-slate-900/90 to-slate-800/90 p-6 shadow-2xl backdrop-blur-sm">
                 <div className="mb-4">
@@ -388,12 +481,26 @@ function StaffDashboard() {
                         {displayedEmergencies.map((emergency) => {
                             const statusColors = {
                                 'pending': 'text-yellow-300 bg-yellow-500/10 border-yellow-500/20',
+                                'assigned': 'text-sky-300 bg-sky-500/10 border-sky-500/20',
                                 'accepted': 'text-blue-300 bg-blue-500/10 border-blue-500/20',
+                                'escalated': 'text-orange-300 bg-orange-500/10 border-orange-500/20',
+                                'critical': 'text-red-300 bg-red-500/10 border-red-500/20',
                                 in_progress: 'text-orange-300 bg-orange-500/10 border-orange-500/20',
                                 'resolved': 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
                             }
+                            const incidentTitle = emergency.title || emergency.emergencyType || 'Untitled Incident'
                             return (
-                                <div key={emergency.id} className="rounded-xl border border-white/10 bg-gradient-to-br from-slate-950/80 to-slate-900/80 p-6 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
+                                <div key={emergency.id} className={`rounded-xl border p-6 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 ${emergency.is_critical
+                                        ? 'bg-gradient-to-br from-red-900/80 to-red-800/80 border-red-500/50 shadow-red-500/20 animate-pulse'
+                                        : 'bg-gradient-to-br from-slate-950/80 to-slate-900/80 border-white/10'
+                                    }`}>
+                                    {/* Critical Alert Banner */}
+                                    {emergency.is_critical && (
+                                        <div className="mb-4 bg-gradient-to-r from-red-600 to-red-700 text-white text-center py-2 px-4 rounded-lg text-sm font-bold">
+                                            ⚠️ CRITICAL INCIDENT - IMMEDIATE ATTENTION REQUIRED
+                                        </div>
+                                    )}
+
                                     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                                         <div className="flex-1">
                                             <div className="flex items-center gap-3 mb-3">
@@ -403,10 +510,10 @@ function StaffDashboard() {
                                                     }`}></div>
                                                 <div>
                                                     <p className="text-lg font-bold text-white">{emergency.userName || emergency.userId}</p>
-                                                    <p className="text-slate-400 text-sm">Reported: {emergency.emergencyType || 'General'} Emergency</p>
+                                                    <p className="text-slate-400 text-sm">Incident: {incidentTitle}</p>
                                                 </div>
-                                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getPriorityColor(getPriority(emergency.emergencyType))}`}>
-                                                    {getPriority(emergency.emergencyType)}
+                                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getPriorityColor(getPriority(emergency.emergencyType || incidentTitle))}`}>
+                                                    {getPriority(emergency.emergencyType || incidentTitle)}
                                                 </span>
                                             </div>
                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm mb-4">
@@ -416,7 +523,17 @@ function StaffDashboard() {
                                                 </div>
                                                 <div>
                                                     <p className="text-slate-500">Location</p>
-                                                    <p className="text-slate-300 font-medium">{emergency.latitude?.toFixed(4) ?? 'N/A'}, {emergency.longitude?.toFixed(4) ?? 'N/A'}</p>
+                                                    <p className="text-slate-300 font-medium">{emergency.locationLabel || emergency.location || `${emergency.latitude?.toFixed(4) ?? 'N/A'}, ${emergency.longitude?.toFixed(4) ?? 'N/A'}`}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-slate-500">Type</p>
+                                                    <p className="text-slate-300 font-medium">{emergency.type || emergency.emergencyType || 'general'}</p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-slate-500">Priority</p>
+                                                    <p className={`font-medium ${emergency.priority === 'high' ? 'text-red-300' : emergency.priority === 'low' ? 'text-emerald-300' : 'text-yellow-300'}`}>
+                                                        {emergency.priority || 'medium'}
+                                                    </p>
                                                 </div>
                                                 <div>
                                                     <p className="text-slate-500">Status</p>
@@ -425,10 +542,19 @@ function StaffDashboard() {
                                                     </span>
                                                 </div>
                                                 <div>
+                                                    <p className="text-slate-500">Escalation</p>
+                                                    <p className="text-slate-300 font-medium">{emergency.escalation_level ?? 0}</p>
+                                                </div>
+                                                <div>
                                                     <p className="text-slate-500">Response Time</p>
                                                     <p className="text-slate-300 font-medium">{getResponseTime(emergency.createdAt)}</p>
                                                 </div>
                                             </div>
+                                            {emergency.summary && emergency.summary !== emergency.description && (
+                                                <div className="bg-slate-900/50 rounded-lg p-3 border border-white/5 mb-4">
+                                                    <p className="text-slate-300 text-sm">{emergency.summary}</p>
+                                                </div>
+                                            )}
                                             {emergency.description && (
                                                 <div className="bg-slate-900/50 rounded-lg p-3 border border-white/5">
                                                     <p className="text-slate-300 text-sm">{emergency.description}</p>
@@ -437,14 +563,14 @@ function StaffDashboard() {
                                         </div>
                                         <div className="flex flex-col gap-3 sm:ml-6">
                                             <div className="flex flex-col gap-2">
-                                                {emergency.status === 'pending' && !emergency.assignedStaffId && (
+                                                {(emergency.status === 'pending' && !emergency.assignedStaffId) || (emergency.status === 'assigned' && emergency.assignedStaffId === user?.uid) ? (
                                                     <button
                                                         onClick={() => handleAcceptCase(emergency.id)}
                                                         className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-500 to-cyan-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-blue-500/30 transition-all duration-300 hover:scale-105 hover:shadow-blue-500/50"
                                                     >
                                                         Accept Case
                                                     </button>
-                                                )}
+                                                ) : null}
                                                 {(emergency.assignedStaffId === user?.uid) && (emergency.status === 'accepted') && (
                                                     <button
                                                         onClick={() => handleStartResponse(emergency.id)}
@@ -453,7 +579,7 @@ function StaffDashboard() {
                                                         Start Response
                                                     </button>
                                                 )}
-                                                {(emergency.assignedStaffId === user?.uid) && emergency.status !== 'resolved' && (
+                                                {(emergency.assignedStaffId === user?.uid) && ['accepted', 'in_progress'].includes(emergency.status) && (
                                                     <button
                                                         onClick={() => handleResolveCase(emergency.id)}
                                                         className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-emerald-500/50"
@@ -465,6 +591,35 @@ function StaffDashboard() {
                                         </div>
                                     </div>
                                     <StatusTimeline status={emergency.status} />
+                                    {(emergency.recommendations || []).length > 0 && (
+                                        <div className="mt-4 pt-4 border-t border-white/10">
+                                            <p className="text-xs font-semibold text-slate-300 mb-2">Recommended Actions</p>
+                                            <div className="space-y-2">
+                                                {(emergency.recommendations || []).map((recommendation, idx) => (
+                                                    <div key={idx} className="flex items-start gap-2 text-xs text-slate-400">
+                                                        <span className="text-sm">📋</span>
+                                                        <span className="text-slate-300">{recommendation}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {(emergency.events || []).length > 0 && (
+                                        <div className="mt-4 pt-4 border-t border-white/10">
+                                            <p className="text-xs font-semibold text-slate-300 mb-2">Event Timeline</p>
+                                            <div className="space-y-2">
+                                                {(emergency.events || []).map((event, idx) => (
+                                                    <div key={idx} className="flex items-start gap-2 text-xs text-slate-400">
+                                                        <span className="text-sm">{getEventIcon(event.event_type)}</span>
+                                                        <div className="flex-1">
+                                                            <span className="text-slate-300 font-medium">{formatEventType(event.event_type)}</span>
+                                                            <span className="text-slate-500 text-[11px]"> • {formatEventTimestamp(event.timestamp)}</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )
                         })}
@@ -477,3 +632,5 @@ function StaffDashboard() {
 }
 
 export default StaffDashboard
+
+

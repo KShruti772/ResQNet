@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
+import { useBrowserNotifications } from '../hooks/useBrowserNotifications'
+
 import { useNavigate } from 'react-router-dom'
 import { useUser } from '../UserContext.jsx'
 import Toast from '../components/Toast.jsx'
+import OfflineIndicator from '../components/OfflineIndicator.jsx'
 import Spinner from '../components/Spinner.jsx'
 import StatusTimeline from '../components/StatusTimeline.jsx'
 import {
@@ -22,13 +25,22 @@ function UserDashboard() {
     const [selectedFilter, setSelectedFilter] = useState('all')
     const [searchTerm, setSearchTerm] = useState('')
     const [sortOption, setSortOption] = useState('latest')
-    const [emergencyType, setEmergencyType] = useState('General')
+    const [incidentTitle, setIncidentTitle] = useState('')
     const [description, setDescription] = useState('')
+    const [incidentBuilding, setIncidentBuilding] = useState('')
+    const [incidentFloor, setIncidentFloor] = useState('')
+    const [incidentRoom, setIncidentRoom] = useState('')
     const [stableOrgId, setStableOrgId] = useState(null)
     const { user, userData, loading: authLoading } = useUser()
+    const { requestPermission } = useBrowserNotifications()
     const navigate = useNavigate()
     const [toast, setToast] = useState(null)
     const normalizedOrgId = normalizeOrganizationId(userData?.organizationId || '')
+
+    useEffect(() => {
+        // Request browser notification permission
+        requestPermission();
+    }, [requestPermission]);
 
     useEffect(() => {
         if (normalizedOrgId && normalizedOrgId !== stableOrgId) {
@@ -41,11 +53,21 @@ function UserDashboard() {
     }, [normalizedOrgId, stableOrgId])
 
     useEffect(() => {
+        // Request browser notification permission
+        requestPermission();
+    }, [requestPermission]);
+
+    useEffect(() => {
         if (!authLoading && user && !normalizedOrgId) {
             console.log('User Dashboard: No organization setup, redirecting')
             navigate('/organization-setup')
         }
     }, [authLoading, user, normalizedOrgId, navigate])
+
+    useEffect(() => {
+        // Request browser notification permission
+        requestPermission();
+    }, [requestPermission]);
 
     useEffect(() => {
         if (authLoading || !stableOrgId || !user?.uid || !userData) {
@@ -96,7 +118,7 @@ function UserDashboard() {
         let filtered = emergencies.filter((emergency) => {
             const matchesStatus = selectedFilter === 'all' || emergency.status === selectedFilter
             const matchesSearch = searchTerm === '' ||
-                emergency.emergencyType?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                emergency.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                 emergency.description?.toLowerCase().includes(searchTerm.toLowerCase())
             return matchesStatus && matchesSearch
         })
@@ -153,8 +175,13 @@ function UserDashboard() {
             return
         }
 
+        if (!incidentTitle.trim()) {
+            setError('Please provide an incident title.')
+            return
+        }
+
         if (!description.trim()) {
-            setError('Please provide an emergency description.')
+            setError('Please provide an incident description.')
             return
         }
 
@@ -172,23 +199,31 @@ function UserDashboard() {
                             phone: userData.phone || '',
                             email: user.email || ''
                         },
-                        emergencyType,
+                        title: incidentTitle,
                         description,
                         latitude,
-                        longitude
+                        longitude,
+                        location: {
+                            building: incidentBuilding,
+                            floor: incidentFloor,
+                            room: incidentRoom
+                        }
                     })
 
                     console.log('User Dashboard: Emergency created successfully', {
                         userId: user.uid,
                         organizationId: userData.organizationId,
-                        emergencyType,
+                        title: incidentTitle,
                         latitude,
                         longitude
                     })
 
-                    setToast({ message: '🚨 Emergency reported successfully!', type: 'success' })
+                    setToast({ message: 'Incident created successfully!', type: 'success' })
                     setDescription('')
-                    setEmergencyType('General')
+                    setIncidentTitle('')
+                    setIncidentBuilding('')
+                    setIncidentFloor('')
+                    setIncidentRoom('')
                 } catch (saveError) {
                     console.error('User Dashboard: Error creating emergency:', saveError.message, {
                         code: saveError.code,
@@ -275,17 +310,14 @@ function UserDashboard() {
                 <div className="mt-6 space-y-6">
                     <div className="grid gap-4 sm:grid-cols-2">
                         <div>
-                            <label className="block text-sm font-semibold text-slate-200 mb-2">Emergency Type</label>
-                            <select
-                                value={emergencyType}
-                                onChange={(e) => setEmergencyType(e.target.value)}
-                                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
-                            >
-                                <option>Fire</option>
-                                <option>Medical</option>
-                                <option>Security</option>
-                                <option>General</option>
-                            </select>
+                            <label className="block text-sm font-semibold text-slate-200 mb-2">Incident Title</label>
+                            <input
+                                type="text"
+                                value={incidentTitle}
+                                onChange={(e) => setIncidentTitle(e.target.value)}
+                                placeholder="Short incident title..."
+                                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
+                            />
                         </div>
                         <div>
                             <label className="block text-sm font-semibold text-slate-200 mb-2">Description</label>
@@ -294,6 +326,38 @@ function UserDashboard() {
                                 value={description}
                                 onChange={(e) => setDescription(e.target.value)}
                                 placeholder="Brief description of the emergency..."
+                                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
+                            />
+                        </div>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-3 mt-4">
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-200 mb-2">Building</label>
+                            <input
+                                type="text"
+                                value={incidentBuilding}
+                                onChange={(e) => setIncidentBuilding(e.target.value)}
+                                placeholder="Block A"
+                                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-200 mb-2">Floor</label>
+                            <input
+                                type="text"
+                                value={incidentFloor}
+                                onChange={(e) => setIncidentFloor(e.target.value)}
+                                placeholder="3"
+                                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-200 mb-2">Room Number</label>
+                            <input
+                                type="text"
+                                value={incidentRoom}
+                                onChange={(e) => setIncidentRoom(e.target.value)}
+                                placeholder="305"
                                 className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 placeholder-slate-400 transition-all duration-200 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/20"
                             />
                         </div>
@@ -386,6 +450,7 @@ function UserDashboard() {
                                 in_progress: 'text-orange-300 bg-orange-500/10 border-orange-500/20',
                                 resolved: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
                             }
+                            const incidentTitle = emergency.title || emergency.emergencyType || 'Untitled Incident'
                             return (
                                 <div key={emergency.id} className="rounded-xl border border-white/10 bg-gradient-to-br from-slate-950/80 to-slate-900/80 p-6 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
                                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -395,9 +460,9 @@ function UserDashboard() {
                                                     emergency.emergencyType === 'Medical' ? 'bg-red-500' :
                                                         emergency.emergencyType === 'Security' ? 'bg-yellow-500' : 'bg-green-500'
                                                     }`}></div>
-                                                <p className="text-lg font-bold text-white">{emergency.emergencyType || 'General'}</p>
-                                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getPriorityColor(getPriority(emergency.emergencyType))}`}>
-                                                    {getPriority(emergency.emergencyType)}
+                                                <p className="text-lg font-bold text-white">{incidentTitle}</p>
+                                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getPriorityColor(getPriority(emergency.emergencyType || incidentTitle))}`}>
+                                                    {getPriority(emergency.emergencyType || incidentTitle)}
                                                 </span>
                                             </div>
                                             <p className="text-slate-400 text-sm mb-3">{emergency.description || 'No description provided'}</p>
@@ -443,7 +508,11 @@ function UserDashboard() {
                                 ? 'text-orange-300 bg-orange-500/10 border-orange-500/30'
                                 : 'text-blue-300 bg-blue-500/10 border-blue-500/30'
                             }`}>
-                            {latestEmergency.status === 'resolved' ? 'Resolved' : latestEmergency.status === 'in_progress' ? 'In Progress' : 'Help is on the way'}
+                            {latestEmergency.status === 'resolved'
+                                ? 'Resolved'
+                                : latestEmergency.status === 'in_progress'
+                                    ? 'In Progress'
+                                    : 'Help is on the way'}
                         </span>
                     </div>
 
@@ -455,9 +524,9 @@ function UserDashboard() {
                                         latestEmergency.emergencyType === 'Security' ? 'bg-yellow-500' : 'bg-green-500'
                                     }`}></div>
                                 <div>
-                                    <p className="text-white font-bold text-lg">{latestEmergency.emergencyType || 'General'}</p>
-                                    <span className={`ml-2 px-3 py-1 rounded-full text-xs font-semibold ${getPriorityColor(getPriority(latestEmergency.emergencyType))}`}>
-                                        {getPriority(latestEmergency.emergencyType)} Priority
+                                    <p className="text-white font-bold text-lg">{latestEmergency.title || latestEmergency.emergencyType || 'Untitled Incident'}</p>
+                                    <span className={`ml-2 px-3 py-1 rounded-full text-xs font-semibold ${getPriorityColor(getPriority(latestEmergency.emergencyType || latestEmergency.title))}`}>
+                                        {getPriority(latestEmergency.emergencyType || latestEmergency.title)} Priority
                                     </span>
                                 </div>
                             </div>
@@ -505,3 +574,11 @@ function UserDashboard() {
 }
 
 export default UserDashboard
+
+
+
+
+
+
+
+

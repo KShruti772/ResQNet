@@ -55,7 +55,8 @@ function OrganizationSetup() {
                 storeOrganizationId(orgId)
                 await setDoc(doc(db, 'users', user.uid), {
                     uid: user.uid,
-                    organizationId: orgId
+                    organizationId: orgId,
+                    active_incidents_count: 0
                 }, { merge: true })
 
                 updateUser({ organizationId: orgId, organizationName: orgData.name })
@@ -82,7 +83,8 @@ function OrganizationSetup() {
                 storeOrganizationId(orgId)
                 await setDoc(doc(db, 'users', user.uid), {
                     uid: user.uid,
-                    organizationId: orgId
+                    organizationId: orgId,
+                    active_incidents_count: 0
                 }, { merge: true })
 
                 updateUser({ organizationId: orgId, organizationName: form.name.trim() })

@@ -78,7 +78,9 @@ export const playAlertSound = () => {
 
 export const getStatusSteps = () => [
     { key: 'pending', label: 'Pending', color: 'bg-yellow-500' },
+    { key: 'assigned', label: 'Assigned', color: 'bg-sky-500' },
     { key: 'accepted', label: 'Accepted', color: 'bg-blue-500' },
+    { key: 'critical', label: 'Critical', color: 'bg-red-500' },
     { key: 'in_progress', label: 'In Progress', color: 'bg-orange-500' },
     { key: 'resolved', label: 'Resolved', color: 'bg-emerald-500' }
 ]
@@ -86,4 +88,33 @@ export const getStatusSteps = () => [
 export const getCurrentStatusIndex = (status) => {
     const steps = getStatusSteps()
     return steps.findIndex(step => step.key === normalizeEmergencyStatus(status))
+}
+
+export const formatEventType = (eventType) => {
+    const formatted = {
+        'CREATED': 'Created',
+        'ASSIGNED': 'Assigned',
+        'ACCEPTED': 'Accepted',
+        'ESCALATED': 'Escalated',
+        'RESOLVED': 'Resolved'
+    }
+    return formatted[eventType] || String(eventType).trim()
+}
+
+export const formatEventTimestamp = (timestamp) => {
+    if (!timestamp) return 'Unknown time'
+    const ts = timestamp.seconds ? timestamp.seconds * 1000 : timestamp
+    const date = new Date(ts)
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+}
+
+export const getEventIcon = (eventType) => {
+    const icons = {
+        'CREATED': '📝',
+        'ASSIGNED': '👤',
+        'ACCEPTED': '✅',
+        'ESCALATED': '⬆️',
+        'RESOLVED': '🎉'
+    }
+    return icons[eventType] || '•'
 }
