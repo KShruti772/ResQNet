@@ -1,6 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Helper functions for role-based access control
     function isSignedIn() {
       return request.auth != null;
     }
@@ -29,7 +30,33 @@ service cloud.firestore {
       return currentUserRole() == "staff" || currentUserRole() == "admin";
     }
 
+    function isAdmin() {
+      return currentUserRole() == "admin";
+    }
+
+    function isOrgMember(orgId) {
+      return hasCurrentUserProfile() && currentUserOrgId() == orgId;
+    }
+
+    // Input validation helpers
+    function isValidEmail(email) {
+      return email is string && email.size() > 0 && email.matches('.*@.*\\\\..*');
+    }
+
+    function isValidPhoneNumber(phone) {
+      return phone is string && phone.size() >= 10 && phone.size() <= 20;
+    }
+
+    function isValidIncidentData(data) {
+      return data.title is string && data.title.size() >= 3 && data.title.size() <= 200
+        && data.description is string && data.description.size() >= 10
+        && data.organizationId is string && data.organizationId.size() > 0
+        && data.status is string && data.status in ['pending', 'assigned', 'accepted', 'in_progress', 'resolved', 'critical', 'escalated'];
+    }
+
+    // User Collection - Restricted access
     match /users/{userId} {
+      // Users can only read their own profile or view staff/admin from same org
       allow read: if isCurrentUser(userId)
         || (
           hasCurrentUserProfile()
@@ -38,16 +65,23 @@ service cloud.firestore {
           && resource.data.organizationId == currentUserOrgId()
         );
 
+      // Only allow creating your own profile
       allow create: if isCurrentUser(userId)
-        && request.resource.data.uid == request.auth.uid;
+        && request.resource.data.uid == request.auth.uid
+        && (request.resource.data.role == 'user' || request.resource.data.role == 'staff' || request.resource.data.role == 'admin')
+        && isValidEmail(request.resource.data.email);
 
+      // Users cannot modify their role - only their own profile
       allow update: if isCurrentUser(userId)
-        && request.resource.data.role == resource.data.role;
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.organizationId == resource.data.organizationId;
+
       allow delete: if false;
     }
 
+    // Organizations Collection - Org members can read, admins can manage
     match /organizations/{organizationId} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && isOrgMember(organizationId);
 
       allow create: if hasCurrentUserProfile()
         && organizationId == request.resource.data.organizationId
@@ -56,27 +90,25 @@ service cloud.firestore {
       allow update: if hasCurrentUserProfile()
         && (
           resource.data.createdBy == request.auth.uid
-          || isOrgStaffOrAdmin()
-        );
+          || isAdmin()
+        )
+        && isOrgMember(resource.data.organizationId);
 
       allow delete: if false;
     }
 
+    // Emergencies Collection - Core incident data with validation
     match /emergencies/{emergencyId} {
+      // Only authenticated users from the same org can create incidents
       allow create: if hasCurrentUserProfile()
-        && request.resource.data.keys().hasAll([
-          "userId",
-          "organizationId",
-          "userName",
-          "location",
-          "status",
-          "createdAt"
-        ])
+        && isValidIncidentData(request.resource.data)
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.organizationId != null
         && request.resource.data.organizationId == currentUserOrgId()
-        && request.resource.data.status == "pending";
+        && request.resource.data.status == "pending"
+        && request.resource.data.createdAt == request.time;
 
+      // Read access: creator or org members
       allow read: if isSignedIn() &&
         (
           resource.data.userId == request.auth.uid ||
@@ -87,16 +119,25 @@ service cloud.firestore {
           )
         );
 
+      // Only staff/admins can update incidents, within their org
       allow update: if hasCurrentUserProfile()
         && isOrgStaffOrAdmin()
         && resource.data.organizationId != null
         && resource.data.organizationId == currentUserOrgId()
         && request.resource.data.organizationId == resource.data.organizationId
         && request.resource.data.userId == resource.data.userId
-        && request.resource.data.createdAt == resource.data.createdAt;
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['pending', 'assigned', 'accepted', 'in_progress', 'resolved', 'critical', 'escalated'];
 
       allow delete: if false;
     }
+
+    // Catch-all: deny everything not explicitly allowed
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
 
   }
 }

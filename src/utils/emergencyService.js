@@ -17,6 +17,32 @@ import {
     normalizeEmergencyStatus,
     normalizeOrganizationId
 } from './emergencyUtils.js'
+import {
+    notifyIncidentCreated,
+    notifyStaffAssigned,
+    notifyEscalation,
+    notifyCriticalAlert
+} from '../../services/notificationService.js'
+import {
+    retryAsync,
+    isOffline,
+    queueOfflineRequest,
+    syncQueuedRequests,
+    getQueuedRequestCount,
+    subscribeOnlineSync
+} from './retryService.js'
+import {
+    logActivity,
+    logError
+} from './logService.js'
+import { getBestStaff, getFallbackStaff } from '../services/assignmentService.js'
+import {
+    validateIncident,
+    validateStatusUpdate,
+    sanitizeUserInput
+} from './validationService.js'
+import { rateLimiter } from './rateLimitService.js'
+import { analyzeIncident, detectIncidentPatterns } from '../../services/geminiService.js'
 
 export const LOCAL_ORGANIZATION_KEY = 'orgId'
 
@@ -34,6 +60,58 @@ export const storeOrganizationId = (organizationId) => {
 
 export const getStoredOrganizationId = () => {
     return localStorage.getItem(LOCAL_ORGANIZATION_KEY) || ''
+}
+
+/**
+ * Detect incident patterns by analyzing recent incidents from same location and type
+ * @param {string} organizationId - Organization ID
+ * @param {Object} location - Incident location (building, floor, room)
+ * @param {string} incidentType - AI-detected incident type
+ * @returns {Promise<Object>} Pattern detection results
+ */
+const detectPatternsForIncident = async (organizationId, location, incidentType) => {
+    try {
+        // Query recent incidents from same organization (last 30 days)
+        const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000))
+
+        const incidentsQuery = query(
+            collection(db, 'emergencies'),
+            where('organizationId', '==', organizationId),
+            where('createdAt', '>', thirtyDaysAgo)
+        )
+
+        const incidentsSnapshot = await getDocs(incidentsQuery)
+        const recentIncidents = incidentsSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            createdAt: doc.data().createdAt // Keep Firestore timestamp
+        }))
+
+        // Create current incident object for pattern detection
+        const currentIncident = {
+            location,
+            type: incidentType
+        }
+
+        // Use the pattern detection service
+        const patternResult = detectIncidentPatterns(recentIncidents, currentIncident)
+
+        console.log(`Pattern analysis for org ${organizationId}:`, {
+            totalRecentIncidents: recentIncidents.length,
+            patternResult
+        })
+
+        return patternResult
+
+    } catch (error) {
+        console.error('Pattern detection failed:', error)
+        // Return safe fallback
+        return {
+            pattern_detected: false,
+            frequency_score: 0,
+            note: null
+        }
+    }
 }
 
 export const getUserProfile = async (userId) => {
@@ -68,6 +146,27 @@ const buildLocationLabel = (location = {}) => {
 const getStaffCurrentFloor = (staffUser = {}) => {
     const currentLocation = staffUser.current_location || staffUser.currentLocation || {}
     return String(currentLocation.floor || '').trim().toLowerCase()
+}
+
+const getNotificationAdminEmail = (user = {}) => {
+    return String(import.meta.env.VITE_NOTIFICATION_ADMIN_EMAIL || user.email || '').trim()
+}
+
+const fetchOrganizationStaffEmails = async (organizationId) => {
+    if (!organizationId) {
+        return []
+    }
+
+    const staffQuery = query(
+        collection(db, 'users'),
+        where('organizationId', '==', organizationId),
+        where('role', '==', 'staff')
+    )
+
+    const snapshot = await getDocs(staffQuery)
+    return snapshot.docs
+        .map((docSnapshot) => String(docSnapshot.data()?.email || '').trim())
+        .filter(Boolean)
 }
 
 export const normalizeEmergencyRecord = (emergencyId, emergency = {}) => {
@@ -178,7 +277,7 @@ const addEvent = async (incidentId, eventType, performedBy) => {
     const newEvent = {
         event_type: String(eventType || '').trim().toUpperCase(),
         performed_by: String(performedBy || '').trim(),
-        timestamp: serverTimestamp()
+        timestamp: new Date()
     }
 
     await updateDoc(incidentRef, {
@@ -217,7 +316,7 @@ export const checkSLARisk = async (incidentId) => {
         if (elapsedSeconds >= slaLimit * 0.7) {
             transaction.update(incidentRef, {
                 risk_flag: true,
-                updatedAt: serverTimestamp()
+                updatedAt: new Date()
             })
         }
 
@@ -356,6 +455,10 @@ const scheduleIncidentEscalation = (incidentId, delayMs = 30000) => {
 export const handleIncidentEscalation = async (incidentId) => {
     const incidentRef = doc(db, 'emergencies', incidentId)
     let shouldScheduleNextEscalation = false
+    let shouldNotifyCritical = false
+    let shouldNotifyEscalation = false
+    let escalatedStaff = null
+    let staffEmails = []
 
     await runTransaction(db, async (transaction) => {
         const incidentSnap = await transaction.get(incidentRef)
@@ -381,13 +484,14 @@ export const handleIncidentEscalation = async (incidentId) => {
 
         const staffSnapshot = await getDocs(staffQuery)
         const staffUsers = staffSnapshot.docs.map((docSnapshot) => ({ uid: docSnapshot.id, ...docSnapshot.data() }))
+        staffEmails = staffUsers.map((staffUser) => String(staffUser.email || '').trim()).filter(Boolean)
         const availableNextStaff = staffUsers
             .filter(isStaffAvailable)
             .filter((staffUser) => !excludedStaffIds.has(staffUser.uid))
 
         const updateData = {
             escalation_level: nextLevel,
-            updatedAt: serverTimestamp()
+            updatedAt: new Date()
         }
 
         if (nextIsCritical) {
@@ -396,9 +500,10 @@ export const handleIncidentEscalation = async (incidentId) => {
             updateData.events = arrayUnion({
                 event_type: 'CRITICAL',
                 performed_by: 'system',
-                timestamp: serverTimestamp()
+                timestamp: new Date()
             })
             transaction.update(incidentRef, updateData)
+            shouldNotifyCritical = true
             console.warn('Escalation max reached; incident marked critical', incidentId)
             return
         }
@@ -406,12 +511,36 @@ export const handleIncidentEscalation = async (incidentId) => {
         if (availableNextStaff.length === 0) {
             updateData.status = 'escalated'
             transaction.update(incidentRef, updateData)
+            shouldScheduleNextEscalation = true
             console.warn('No alternate staff available for escalation', incidentId)
             return
         }
 
-        const nextStaff = selectBestAvailableStaff(availableNextStaff, emergency.locationDetails || {})
-        const previousStaffRef = incident.assignedStaffId ? doc(db, 'users', emergency.assignedStaffId) : null
+        // Use smart assignment for escalation
+        const escalationIncident = {
+            id: incidentId,
+            organizationId: emergency.organizationId,
+            emergencyType: emergency.emergencyType || emergency.type,
+            locationDetails: emergency.locationDetails || {}
+        }
+
+        let nextStaff = await getBestStaff(escalationIncident)
+
+        // Fallback to location-based if smart assignment fails
+        if (!nextStaff) {
+            console.log('Smart assignment failed for escalation, using fallback')
+            nextStaff = getFallbackStaff(availableNextStaff, emergency.locationDetails || {})
+        }
+
+        if (!nextStaff) {
+            updateData.status = 'escalated'
+            transaction.update(incidentRef, updateData)
+            shouldScheduleNextEscalation = true
+            console.warn('No suitable staff found for escalation', incidentId)
+            return
+        }
+
+        const previousStaffRef = emergency.assignedStaffId ? doc(db, 'users', emergency.assignedStaffId) : null
         const nextStaffRef = doc(db, 'users', nextStaff.uid)
 
         const previousStaffCount = previousStaffRef
@@ -436,15 +565,43 @@ export const handleIncidentEscalation = async (incidentId) => {
         updateData.events = arrayUnion({
             event_type: 'ESCALATED',
             performed_by: 'system',
-            timestamp: serverTimestamp()
+            timestamp: new Date()
         })
 
         transaction.update(incidentRef, updateData)
         shouldScheduleNextEscalation = true
+        shouldNotifyEscalation = true
+        escalatedStaff = nextStaff
     })
 
     if (shouldScheduleNextEscalation) {
         scheduleIncidentEscalation(incidentId)
+    }
+
+    if (shouldNotifyCritical) {
+        try {
+            const updatedIncidentSnap = await getDoc(incidentRef)
+            const updatedEmergency = normalizeEmergencyRecord(incidentRef.id, updatedIncidentSnap.data() || {})
+            const adminEmail = getNotificationAdminEmail()
+
+            notifyCriticalAlert(updatedEmergency, adminEmail, staffEmails)
+                .catch((error) => console.warn('Critical alert notification failed', error))
+        } catch (error) {
+            console.warn('Failed to load critical incident for notifications', error)
+        }
+    } else if (shouldNotifyEscalation && escalatedStaff) {
+        try {
+            const updatedIncidentSnap = await getDoc(incidentRef)
+            const updatedEmergency = normalizeEmergencyRecord(incidentRef.id, updatedIncidentSnap.data() || {})
+            const adminEmail = getNotificationAdminEmail()
+            const nextStaffEmail = escalatedStaff.email || escalatedStaff.contactEmail || ''
+            const nextStaffPhone = escalatedStaff.phone || escalatedStaff.phoneNumber || ''
+
+            notifyEscalation(updatedEmergency, adminEmail, nextStaffEmail, nextStaffPhone)
+                .catch((error) => console.warn('Escalation notification failed', error))
+        } catch (error) {
+            console.warn('Failed to load escalated incident for notifications', error)
+        }
     }
 }
 
@@ -466,37 +623,82 @@ const sortEmergenciesByCreatedAt = (emergencies = []) => {
     })
 }
 
-export const createEmergency = async ({ user, title, emergencyType, description, latitude, longitude, location }) => {
+const performCreateEmergency = async ({ user, title, emergencyType, description, latitude, longitude, location }) => {
+    // Security: Validate user authentication
     if (!user || !user.uid) {
         throw new Error('User must be authenticated to create an emergency')
     }
 
-    const organizationId = normalizeOrganizationId(user.organizationId || '')
+    // Security: Check rate limit
+    const rateLimitCheck = rateLimiter.isIncidentCreationAllowed(user.uid)
+    if (!rateLimitCheck.allowed) {
+        const error = new Error('Too many incidents created recently')
+        error.code = 'RATE_LIMITED'
+        error.retryAfter = rateLimitCheck.retryAfter
+        throw error
+    }
 
+    // Security: Validate organization
+    const organizationId = normalizeOrganizationId(user.organizationId || '')
     if (!organizationId) {
         throw new Error('Organization ID is required to create an emergency')
     }
 
-    const normalizedTitle = String(title || emergencyType || 'Untitled Incident').trim()
+    // Security: Sanitize and validate inputs
+    const normalizedTitle = sanitizeUserInput(String(title || emergencyType || 'Untitled Incident').trim())
+    const sanitizedDescription = sanitizeUserInput(String(description || '').trim())
+
     const incidentLocation = {
-        building: String(location?.building || '').trim(),
-        floor: String(location?.floor || '').trim(),
-        room: String(location?.room || '').trim()
+        building: sanitizeUserInput(String(location?.building || '').trim()),
+        floor: sanitizeUserInput(String(location?.floor || '').trim()),
+        room: sanitizeUserInput(String(location?.room || '').trim())
     }
+
+    // Validate incident data
+    const validationResult = validateIncident({
+        title: normalizedTitle,
+        description: sanitizedDescription,
+        location: incidentLocation
+    })
+
+    if (!validationResult.valid) {
+        const error = new Error('Invalid incident data')
+        error.code = 'VALIDATION_ERROR'
+        error.details = validationResult.errors
+        throw error
+    }
+
+    // Enhanced AI Analysis with Gemini
+    console.log('Performing AI analysis for incident:', { title: normalizedTitle, description: sanitizedDescription })
+
+    const aiAnalysis = await analyzeIncident(normalizedTitle, sanitizedDescription)
+    console.log('AI Analysis completed:', aiAnalysis)
+
+    // Pattern Detection - Check for repeated incidents
+    const patternAnalysis = await detectPatternsForIncident(organizationId, incidentLocation, aiAnalysis.type)
+    console.log('Pattern detection completed:', patternAnalysis)
 
     const emergencyData = {
         userId: user.uid,
-        userName: user.fullName || 'Unknown',
+        userName: sanitizeUserInput(user.fullName || 'Unknown'),
         phone: user.phone || 'N/A',
         // Keep `emergencyType` populated so existing dashboards continue working with older records.
         title: normalizedTitle,
-        emergencyType: emergencyType || normalizedTitle,
-        type: 'general',
-        priority: 'medium',
-        summary: description,
-        sla_limit: getSLALimitFromPriority('medium'),
-        risk_flag: false,
-        description,
+        emergencyType: sanitizeUserInput(emergencyType || normalizedTitle),
+        // Enhanced AI fields
+        type: aiAnalysis.type,
+        priority: aiAnalysis.priority,
+        summary: aiAnalysis.summary,
+        recommendations: aiAnalysis.recommendations,
+        ai_confidence: aiAnalysis.confidence,
+        // Pattern detection fields
+        pattern_detected: patternAnalysis.pattern_detected,
+        pattern_note: patternAnalysis.note,
+        pattern_frequency_score: patternAnalysis.frequency_score,
+        // Existing fields
+        sla_limit: getSLALimitFromPriority(aiAnalysis.priority),
+        risk_flag: aiAnalysis.priority === 'high' || patternAnalysis.pattern_detected,
+        description: sanitizedDescription,
         latitude,
         longitude,
         location: incidentLocation,
@@ -510,8 +712,7 @@ export const createEmergency = async ({ user, title, emergencyType, description,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         events: [],
-        recommendations: getRecommendations('general'),
-        is_critical: false
+        is_critical: aiAnalysis.priority === 'high'
     }
 
     console.log('EmergencyService.createEmergency', {
@@ -528,17 +729,45 @@ export const createEmergency = async ({ user, title, emergencyType, description,
     const docRef = await addDoc(collection(db, 'emergencies'), emergencyData)
     const emergencyRef = doc(db, 'emergencies', docRef.id)
     let wasAutoAssigned = false
+    let bestStaff = null
+
+    logActivity('EMERGENCY_CREATED', {
+        userId: user.uid,
+        organizationId,
+        message: `Created emergency ${docRef.id}`,
+        metadata: {
+            emergencyId: docRef.id,
+            title: normalizedTitle,
+            latitude,
+            longitude,
+            location: incidentLocation
+        }
+    }).catch((loggingError) => console.warn('Failed to log emergency creation', loggingError))
 
     try {
-        const staffQuery = query(
-            collection(db, 'users'),
-            where('organizationId', '==', organizationId),
-            where('role', '==', 'staff')
-        )
+        // Use smart assignment service
+        const incidentData = {
+            id: docRef.id,
+            organizationId,
+            emergencyType,
+            locationDetails: incidentLocation
+        }
 
-        const staffSnapshot = await getDocs(staffQuery)
-        const staffUsers = staffSnapshot.docs.map((docSnapshot) => ({ uid: docSnapshot.id, ...docSnapshot.data() }))
-        const bestStaff = selectBestAvailableStaff(staffUsers, incidentLocation)
+        bestStaff = await getBestStaff(incidentData)
+
+        // Fallback to location-based assignment if smart assignment fails
+        if (!bestStaff) {
+            console.log('Smart assignment returned no staff, using fallback')
+            const staffQuery = query(
+                collection(db, 'users'),
+                where('organizationId', '==', organizationId),
+                where('role', '==', 'staff')
+            )
+
+            const staffSnapshot = await getDocs(staffQuery)
+            const staffUsers = staffSnapshot.docs.map((docSnapshot) => ({ uid: docSnapshot.id, ...docSnapshot.data() }))
+            bestStaff = getFallbackStaff(staffUsers, incidentLocation)
+        }
 
         if (bestStaff) {
             await runTransaction(db, async (transaction) => {
@@ -571,11 +800,35 @@ export const createEmergency = async ({ user, title, emergencyType, description,
     addEvent(docRef.id, 'CREATED', user.uid)
         .catch((error) => console.warn('Failed to log creation event', error))
 
-    if (wasAutoAssigned) {
+    if (wasAutoAssigned && bestStaff) {
         // Log assignment event
         addEvent(docRef.id, 'ASSIGNED', bestStaff.uid)
             .catch((error) => console.warn('Failed to log assignment event', error))
+        logActivity('EMERGENCY_ASSIGNED', {
+            userId: user.uid,
+            organizationId,
+            message: `Emergency ${docRef.id} auto-assigned to staff ${bestStaff.uid}`,
+            metadata: {
+                emergencyId: docRef.id,
+                assignedStaffId: bestStaff.uid,
+                assignedStaffName: bestStaff.fullName || bestStaff.displayName || 'Staff Member'
+            }
+        }).catch((loggingError) => console.warn('Failed to log emergency assignment', loggingError))
         scheduleIncidentEscalation(docRef.id)
+    }
+
+    const notificationIncident = normalizeEmergencyRecord(docRef.id, emergencyData)
+    const adminEmail = getNotificationAdminEmail(user)
+
+    retryAsync(() => notifyIncidentCreated(notificationIncident, adminEmail), 3, 1000, { operationName: 'notifyIncidentCreated' })
+        .catch((error) => console.warn('Incident created notification failed', error))
+
+    if (wasAutoAssigned && bestStaff) {
+        const staffEmail = bestStaff.email || bestStaff.contactEmail || ''
+        const staffPhone = bestStaff.phone || bestStaff.phoneNumber || ''
+
+        retryAsync(() => notifyStaffAssigned(notificationIncident, staffEmail, staffPhone), 3, 1000, { operationName: 'notifyStaffAssigned' })
+            .catch((error) => console.warn('Staff assignment notification failed', error))
     }
 
     // Start AI metadata extraction after incident creation without blocking the main flow.
@@ -583,6 +836,63 @@ export const createEmergency = async ({ user, title, emergencyType, description,
         .catch((error) => console.warn('Background AI metadata update failed', error))
 
     return normalizeEmergencyRecord(docRef.id, emergencyData)
+}
+
+export const createEmergency = async (payload) => {
+    if (isOffline()) {
+        await queueOfflineRequest('createEmergency', payload)
+        const error = new Error('Offline queued incident creation')
+        error.code = 'OFFLINE_QUEUED'
+        throw error
+    }
+
+    try {
+        return await retryAsync(() => performCreateEmergency(payload), 3, 1000, { operationName: 'createEmergency' })
+    } catch (error) {
+        const isNetworkIssue = isOffline() || String(error?.message || '').toLowerCase().includes('network')
+        if (isNetworkIssue) {
+            await queueOfflineRequest('createEmergency', payload)
+            logActivity('EMERGENCY_CREATE_OFFLINE_QUEUED', {
+                userId: payload.user?.uid,
+                organizationId: normalizeOrganizationId(payload.user?.organizationId || ''),
+                message: 'Queued emergency create request because the client appears offline',
+                metadata: {
+                    payloadType: 'createEmergency',
+                    emergencyTitle: payload.title || payload.emergencyType || 'Untitled Incident'
+                }
+            }).catch((loggingError) => console.warn('Failed to log offline emergency queue', loggingError))
+            const queueError = new Error('Offline queued incident creation')
+            queueError.code = 'OFFLINE_QUEUED'
+            throw queueError
+        }
+        throw error
+    }
+}
+
+export const syncQueuedIncidents = async () => {
+    return await syncQueuedRequests({
+        createEmergency: async (payload) => await performCreateEmergency(payload),
+        notifyIncidentCreated: async ({ emergency, adminEmail }) => await notifyIncidentCreated(emergency, adminEmail),
+        notifyStaffAssigned: async ({ emergency, staffEmail, staffPhone }) => await notifyStaffAssigned(emergency, staffEmail, staffPhone),
+        notifyEscalation: async ({ emergency, adminEmail, newStaffEmail, newStaffPhone }) => await notifyEscalation(emergency, adminEmail, newStaffEmail, newStaffPhone),
+        notifyCriticalAlert: async ({ emergency, adminEmail }) => await notifyCriticalAlert(emergency, adminEmail),
+        logActivity: async (payload) => await logActivity(payload.action, payload),
+        logError: async (payload) => await logError(null, payload)
+    })
+}
+
+export const getQueuedIncidentCount = () => getQueuedRequestCount()
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+    subscribeOnlineSync({
+        createEmergency: async (payload) => await performCreateEmergency(payload),
+        notifyIncidentCreated: async ({ emergency, adminEmail }) => await notifyIncidentCreated(emergency, adminEmail),
+        notifyStaffAssigned: async ({ emergency, staffEmail, staffPhone }) => await notifyStaffAssigned(emergency, staffEmail, staffPhone),
+        notifyEscalation: async ({ emergency, adminEmail, newStaffEmail, newStaffPhone }) => await notifyEscalation(emergency, adminEmail, newStaffEmail, newStaffPhone),
+        notifyCriticalAlert: async ({ emergency, adminEmail }) => await notifyCriticalAlert(emergency, adminEmail),
+        logActivity: async (payload) => await logActivity(payload.action, payload),
+        logError: async (payload) => await logError(null, payload)
+    })
 }
 
 export const fetchEmergencies = ({ organizationId, userId, onNext, onError }) => {
@@ -682,7 +992,7 @@ export const acceptCase = async (caseId, user) => {
             events: arrayUnion({
                 event_type: 'ACCEPTED',
                 performed_by: user.uid,
-                timestamp: serverTimestamp()
+                timestamp: new Date()
             })
         }
 
@@ -690,6 +1000,12 @@ export const acceptCase = async (caseId, user) => {
     })
 
     console.log('EmergencyService.acceptCase success', { caseId })
+    logActivity('EMERGENCY_ACCEPTED', {
+        userId: user.uid,
+        organizationId: actorOrganizationId,
+        message: `Emergency ${caseId} accepted by ${user.uid}`,
+        metadata: { emergencyId: caseId }
+    }).catch((loggingError) => console.warn('Failed to log emergency acceptance', loggingError))
     return {
         caseId,
         status: 'accepted',
@@ -699,8 +1015,26 @@ export const acceptCase = async (caseId, user) => {
 }
 
 export const updateEmergencyStatus = async ({ emergencyId, status, actor }) => {
+    // Security: Validate authentication
     if (!actor?.uid) {
         throw new Error('Authenticated user is required to update emergency status')
+    }
+
+    // Security: Check rate limit for updates
+    const rateLimitCheck = rateLimiter.isIncidentUpdateAllowed(actor.uid)
+    if (!rateLimitCheck.allowed) {
+        const error = new Error('Too many update requests')
+        error.code = 'RATE_LIMITED'
+        error.retryAfter = rateLimitCheck.retryAfter
+        throw error
+    }
+
+    // Security: Validate status
+    const statusValidation = validateStatusUpdate(status)
+    if (!statusValidation.valid) {
+        const error = new Error(statusValidation.error)
+        error.code = 'VALIDATION_ERROR'
+        throw error
     }
 
     const normalizedStatus = normalizeEmergencyStatus(status)
@@ -715,10 +1049,12 @@ export const updateEmergencyStatus = async ({ emergencyId, status, actor }) => {
 
         const emergency = normalizeEmergencyRecord(emergencySnap.id, emergencySnap.data())
 
+        // Security: Check organization access
         if (!actorOrganizationId || emergency.organizationId !== actorOrganizationId) {
             throw new Error('You can only update emergencies from your organization')
         }
 
+        // Security: Check role-based access
         const actorRole = actor.role || 'user'
         const isAdmin = actorRole === 'admin'
         const isAssignedStaff = emergency.assignedStaffId === actor.uid
@@ -738,12 +1074,20 @@ export const updateEmergencyStatus = async ({ emergencyId, status, actor }) => {
             updateData.events = arrayUnion({
                 event_type: 'RESOLVED',
                 performed_by: actor.uid,
-                timestamp: serverTimestamp()
+                timestamp: new Date()
             })
         }
 
         transaction.update(emergencyRef, updateData)
     })
+
+    logActivity('EMERGENCY_STATUS_UPDATED', {
+        action: 'EMERGENCY_STATUS_UPDATED',
+        userId: actor.uid,
+        organizationId: actorOrganizationId,
+        message: `Updated emergency ${emergencyId} status to ${normalizedStatus}`,
+        metadata: { emergencyId, status: normalizedStatus }
+    }).catch((loggingError) => console.warn('Failed to log status update', loggingError))
 }
 
 export const updateStaffLocation = async ({ staffId, building, floor }) => {
@@ -751,13 +1095,57 @@ export const updateStaffLocation = async ({ staffId, building, floor }) => {
         throw new Error('Staff ID is required to update location')
     }
 
+    console.log('EmergencyService.updateStaffLocation called', {
+        staffId,
+        building,
+        floor
+    })
+
     await updateDoc(doc(db, 'users', staffId), {
         current_location: {
             building: String(building || '').trim(),
             floor: String(floor || '').trim()
         },
-        availability_status: 'available'
+        availability_status: 'available',
+        location_updated_at: new Date()
     })
+}
+
+/**
+ * Ensure staff profile has required location data
+ * @param {string} staffId - Staff user ID
+ * @returns {Promise<Object>} Staff location data
+ */
+export const ensureStaffLocationData = async (staffId) => {
+    if (!staffId) return null
+
+    try {
+        const staffRef = doc(db, 'users', staffId)
+        const staffSnap = await getDoc(staffRef)
+
+        if (!staffSnap.exists()) return null
+
+        const staffData = staffSnap.data()
+        const currentLocation = staffData.current_location || staffData.currentLocation || {}
+
+        // If location data is missing, return defaults
+        if (!currentLocation.building || !currentLocation.floor) {
+            return {
+                building: currentLocation.building || '',
+                floor: currentLocation.floor || '',
+                needsUpdate: true
+            }
+        }
+
+        return {
+            building: currentLocation.building,
+            floor: currentLocation.floor,
+            needsUpdate: false
+        }
+    } catch (error) {
+        console.error('Error checking staff location data:', error)
+        return null
+    }
 }
 
 export const assignEmergencyToStaff = async ({ emergencyId, staffUser, actor }) => {
@@ -797,12 +1185,43 @@ export const assignEmergencyToStaff = async ({ emergencyId, staffUser, actor }) 
             status: emergency.status === 'pending' ? 'accepted' : emergency.status,
             assignedStaffId: staffUser.uid,
             assignedStaffName: staffUser.fullName || staffUser.displayName || 'Staff Member',
-            accepted_at: emergency.status === 'pending' ? serverTimestamp() : undefined,
             updatedAt: serverTimestamp()
+        }
+
+        if (emergency.status === 'pending') {
+            updateData.accepted_at = serverTimestamp()
         }
 
         transaction.update(emergencyRef, updateData)
     })
+
+    try {
+        const updatedEmergencySnap = await getDoc(emergencyRef)
+        const updatedEmergency = normalizeEmergencyRecord(emergencyRef.id, updatedEmergencySnap.data() || {})
+        const staffEmail = staffUser.email || staffUser.contactEmail || ''
+        const staffPhone = staffUser.phone || staffUser.phoneNumber || ''
+
+        logActivity('EMERGENCY_MANUALLY_ASSIGNED', {
+            userId: actor.uid,
+            organizationId: actorOrganizationId,
+            message: `Emergency ${emergencyId} assigned to ${staffUser.uid}`,
+            metadata: { emergencyId, assignedStaffId: staffUser.uid }
+        }).catch((loggingError) => console.warn('Failed to log manual assignment', loggingError))
+
+        notifyStaffAssigned(updatedEmergency, staffEmail, staffPhone)
+            .catch((error) => {
+                logError(error, {
+                    action: 'NOTIFY_STAFF_ASSIGNED',
+                    organizationId: actorOrganizationId,
+                    userId: actor.uid,
+                    message: `Failed to notify staff ${staffUser.uid} after assignment for ${emergencyId}`,
+                    metadata: { emergencyId, staffEmail, staffPhone }
+                }).catch((loggingError) => console.warn('Failed to log staff assignment notification error', loggingError))
+                console.warn('Staff assignment notification failed', error)
+            })
+    } catch (notificationError) {
+        console.warn('Failed to notify staff of assignment', notificationError)
+    }
 }
 
 export const fetchOrganizationStaff = async (organizationId) => {
@@ -985,6 +1404,8 @@ export const getStaffPerformance = async (organizationId) => {
 
 const checkCriticalStatus = async (incidentId) => {
     const incidentRef = doc(db, 'emergencies', incidentId)
+    let shouldNotifyCritical = false
+    let emergencyOrganizationId = ''
 
     await runTransaction(db, async (transaction) => {
         const incidentSnap = await transaction.get(incidentRef)
@@ -993,6 +1414,7 @@ const checkCriticalStatus = async (incidentId) => {
         }
 
         const emergency = normalizeEmergencyRecord(incidentSnap.id, incidentSnap.data())
+        emergencyOrganizationId = emergency.organizationId
 
         // Skip if already critical
         if (emergency.is_critical) {
@@ -1020,16 +1442,31 @@ const checkCriticalStatus = async (incidentId) => {
             const updateData = {
                 is_critical: true,
                 status: emergency.status === 'pending' || emergency.status === 'accepted' ? 'critical' : emergency.status,
-                updatedAt: serverTimestamp(),
+                updatedAt: new Date(),
                 events: arrayUnion({
                     event_type: 'CRITICAL',
                     performed_by: 'system',
-                    timestamp: serverTimestamp()
+                    timestamp: new Date()
                 })
             }
 
             transaction.update(incidentRef, updateData)
+            shouldNotifyCritical = true
             console.warn('Incident marked as critical', incidentId)
         }
     })
+
+    if (shouldNotifyCritical) {
+        try {
+            const updatedIncidentSnap = await getDoc(incidentRef)
+            const updatedEmergency = normalizeEmergencyRecord(incidentRef.id, updatedIncidentSnap.data() || {})
+            const staffEmails = await fetchOrganizationStaffEmails(emergencyOrganizationId)
+            const adminEmail = getNotificationAdminEmail()
+
+            notifyCriticalAlert(updatedEmergency, adminEmail, staffEmails)
+                .catch((error) => console.warn('Critical alert notification failed', error))
+        } catch (error) {
+            console.warn('Failed to send critical alert notification', error)
+        }
+    }
 }

@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useBrowserNotifications } from '../hooks/useBrowserNotifications'
 import { useUser } from '../UserContext.jsx'
 import Toast from '../components/Toast.jsx'
 import OfflineIndicator from '../components/OfflineIndicator.jsx'
 import Spinner from '../components/Spinner.jsx'
 import EmergencyMap from '../components/EmergencyMap.jsx'
 import StatusTimeline from '../components/StatusTimeline.jsx'
+import { LiveUpdateIndicator, RealtimeToast } from '../components/RealtimeIndicator.jsx'
 import {
     formatEmergencyStatus,
     getPriority,
     getPriorityColor,
     getResponseTime,
     normalizeOrganizationId,
+    safeGetTimestamp,
     playAlertSound,
     formatEventType,
     formatEventTimestamp,
@@ -26,6 +29,9 @@ import {
     getAnalytics,
     getStaffPerformance
 } from '../utils/emergencyService.js'
+import { getRecentLogs } from '../utils/logService.js'
+import { generateIncidentPDF } from '../utils/pdfService.js'
+import { socketService } from '../utils/socketService.js'
 
 function AdminDashboard() {
     const [emergencies, setEmergencies] = useState([])
@@ -41,10 +47,21 @@ function AdminDashboard() {
     })
     const [staffPerformance, setStaffPerformance] = useState([])
     const { user, userData, loading: authLoading } = useUser()
+    const { requestPermission } = useBrowserNotifications()
     const navigate = useNavigate()
     const [toast, setToast] = useState(null)
+    const [realtimeToast, setRealtimeToast] = useState(null)
+    const [exportingPdfId, setExportingPdfId] = useState(null)
+    const [logs, setLogs] = useState([])
+    const [logsLoading, setLogsLoading] = useState(false)
     const previousCountRef = useRef(0)
     const normalizedOrgId = normalizeOrganizationId(userData?.organizationId || '')
+
+    useEffect(() => {
+        console.log('Rendering dashboard')
+        console.log('User:', user)
+        console.log('Location:', userData?.current_location)
+    }, [user, userData])
 
     useEffect(() => {
         if (normalizedOrgId && normalizedOrgId !== stableOrgId) {
@@ -64,11 +81,17 @@ function AdminDashboard() {
     }, [authLoading, user, normalizedOrgId, navigate])
 
     useEffect(() => {
+        requestPermission()
+    }, [requestPermission])
+
+    useEffect(() => {
         if (authLoading || !stableOrgId || !user?.uid || !userData) {
             console.log('Admin Dashboard: Waiting for stable orgId + auth + userData', {
+                authLoading,
                 stableOrgId,
                 userId: user?.uid,
-                userData: userData ? 'loaded' : 'missing'
+                userData: userData ? 'loaded' : 'missing',
+                userDataKeys: userData ? Object.keys(userData) : []
             })
             return
         }
@@ -86,7 +109,8 @@ function AdminDashboard() {
                 onNext: (emergencies) => {
                     console.log('Admin Dashboard: Received emergencies', {
                         count: (emergencies || []).length,
-                        stableOrgId
+                        stableOrgId,
+                        hasData: Array.isArray(emergencies)
                     })
                     setEmergencies(emergencies || [])
                     if (previousCountRef.current > 0 && (emergencies || []).length > previousCountRef.current) {
@@ -102,7 +126,7 @@ function AdminDashboard() {
             })
             return unsubscribe
         } catch (err) {
-            console.error('Admin Dashboard: Query setup error:', err.message)
+            console.error('Admin Dashboard: Query setup error:', err.message, err.stack)
             setError(`Query error: ${err.message}`)
         }
     }, [authLoading, stableOrgId, user?.uid, userData])
@@ -130,6 +154,37 @@ function AdminDashboard() {
         }
 
         loadStaffOptions()
+
+        return () => {
+            isActive = false
+        }
+    }, [stableOrgId])
+
+    useEffect(() => {
+        if (!stableOrgId) {
+            setLogs([])
+            return
+        }
+
+        let isActive = true
+        setLogsLoading(true)
+
+        const loadLogs = async () => {
+            try {
+                const recentLogs = await getRecentLogs(stableOrgId, 10)
+                if (isActive) {
+                    setLogs(recentLogs)
+                }
+            } catch (logError) {
+                console.error('Admin Dashboard: Failed to load recent logs', logError)
+            } finally {
+                if (isActive) {
+                    setLogsLoading(false)
+                }
+            }
+        }
+
+        loadLogs()
 
         return () => {
             isActive = false
@@ -194,6 +249,70 @@ function AdminDashboard() {
         }
     }, [stableOrgId])
 
+    // Initialize socket connection and listen for real-time updates
+    useEffect(() => {
+        if (!stableOrgId || !user?.uid) return
+
+        const setupSocket = async () => {
+            try {
+                // Connect to socket server
+                await socketService.connect(
+                    import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'
+                )
+
+                // Join organization room
+                socketService.joinOrganization(stableOrgId, user.uid, userData?.role || 'admin')
+
+                // Listen for new incidents
+                socketService.onIncidentCreated((incident) => {
+                    console.log('📋 Real-time: New incident', incident)
+                    setRealtimeToast({
+                        message: `New Incident: ${incident.title || incident.emergencyType}`,
+                        type: 'info'
+                    })
+                    // Firestore listener will automatically update the list
+                })
+
+                // Listen for incident updates
+                socketService.onIncidentUpdated((incident) => {
+                    console.log('✏️ Real-time: Incident updated', incident)
+                    setRealtimeToast({
+                        message: `Status Updated: ${incident.status}`,
+                        type: 'success'
+                    })
+                })
+
+                // Listen for incident assignments
+                socketService.onIncidentAssigned((assignment) => {
+                    console.log('👤 Real-time: Incident assigned', assignment)
+                    setRealtimeToast({
+                        message: `Assigned to: ${assignment.assignedStaffName || 'Staff'}`,
+                        type: 'info'
+                    })
+                })
+
+                // Listen for escalations
+                socketService.onIncidentEscalated((escalation) => {
+                    console.log('🚨 Real-time: Incident escalated', escalation)
+                    setRealtimeToast({
+                        message: `⚠️ Critical: ${escalation.title || escalation.emergencyType}`,
+                        type: 'warning'
+                    })
+                })
+
+            } catch (error) {
+                console.warn('Socket connection failed, using fallback:', error)
+                // Firestore listeners will continue to work as fallback
+            }
+        }
+
+        setupSocket()
+
+        return () => {
+            socketService.disconnect()
+        }
+    }, [stableOrgId, user?.uid, userData?.role])
+
     const actor = {
         uid: user?.uid,
         fullName: userData?.fullName || user?.displayName || 'Admin',
@@ -202,7 +321,12 @@ function AdminDashboard() {
     }
 
     const handleUpdateStatus = async (id, status) => {
-        const previousEmergency = emergencies.find((emergency) => emergency.id === id)
+        if (!id || !status) {
+            setError('Invalid status update parameters.')
+            return
+        }
+
+        const previousEmergency = emergencies.find((emergency) => emergency?.id === id)
 
         setEmergencies((prevEmergencies) =>
             prevEmergencies.map((emergency) =>
@@ -231,8 +355,13 @@ function AdminDashboard() {
     }
 
     const handleAssignEmergency = async (emergency) => {
+        if (!emergency?.id) {
+            setError('Invalid emergency data.')
+            return
+        }
+
         const selectedStaffId = assignmentSelections[emergency.id]
-        const selectedStaff = staffOptions.find((staffUser) => staffUser.uid === selectedStaffId)
+        const selectedStaff = staffOptions.find((staffUser) => staffUser?.uid === selectedStaffId)
 
         if (!selectedStaff) {
             setError('Please select a staff member before assigning.')
@@ -274,6 +403,25 @@ function AdminDashboard() {
             )
             setError(`Failed to assign emergency: ${assignError.message}`)
             setToast({ message: 'Failed to assign emergency', type: 'error' })
+        }
+    }
+
+    const handleDownloadPDF = async (incident) => {
+        if (!incident?.id) {
+            setError('Invalid incident data for PDF generation.')
+            return
+        }
+
+        setExportingPdfId(incident.id)
+        try {
+            generateIncidentPDF(incident)
+            setToast({ message: 'Incident PDF downloaded', type: 'success' })
+        } catch (pdfError) {
+            console.error('Failed to generate incident PDF', pdfError)
+            setError('Unable to generate PDF. Please try again.')
+            setToast({ message: 'PDF export failed', type: 'error' })
+        } finally {
+            setExportingPdfId(null)
         }
     }
 
@@ -337,14 +485,14 @@ function AdminDashboard() {
             if (a.is_critical && !b.is_critical) return -1
             if (!a.is_critical && b.is_critical) return 1
             // Then by creation time (newest first)
-            return b.createdAt?.seconds - a.createdAt?.seconds
+            return safeGetTimestamp(b.createdAt) - safeGetTimestamp(a.createdAt)
         })
 
     const total = (emergencies || []).length
     const active = (emergencies || []).filter((e) => e.status !== 'resolved').length
     const resolved = (emergencies || []).filter((e) => e.status === 'resolved').length
     const criticalCount = (emergencies || []).filter((e) => e.is_critical).length
-    const avgResponseTime = resolved > 0 ? Math.floor((emergencies || []).filter(e => e.status === 'resolved').reduce((sum, e) => sum + (Date.now() - e.createdAt.seconds * 1000) / 60000, 0) / resolved) : 0
+    const avgResponseTime = resolved > 0 ? Math.floor((emergencies || []).filter(e => e.status === 'resolved').reduce((sum, e) => sum + (Date.now() - safeGetTimestamp(e.createdAt)) / 60000, 0) / resolved) : 0
 
     // Show critical incident alert
     useEffect(() => {
@@ -356,7 +504,7 @@ function AdminDashboard() {
         }
     }, [criticalCount, toast])
 
-    const emergenciesByType = emergencies.reduce((acc, emergency) => {
+    const emergenciesByType = (emergencies || []).reduce((acc, emergency) => {
         const type = emergency.emergencyType || 'General'
         acc[type] = (acc[type] || 0) + 1
         return acc
@@ -368,6 +516,58 @@ function AdminDashboard() {
                 <div className="text-center">
                     <Spinner />
                     <p className="mt-4 text-slate-300">Loading your dashboard...</p>
+                </div>
+            </div>
+        )
+    }
+
+    // Enhanced error handling for missing organization
+    if (!authLoading && user && !userData) {
+        return (
+            <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+                <div className="text-center max-w-md mx-auto p-6">
+                    <div className="text-6xl mb-4">⚠️</div>
+                    <h2 className="text-xl font-bold text-white mb-2">Setup Required</h2>
+                    <p className="text-slate-300 mb-4">Your account needs to be configured with an organization.</p>
+                    <button
+                        onClick={() => navigate('/organization-setup')}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+                    >
+                        Set Up Organization
+                    </button>
+                </div>
+            </div>
+        )
+    }
+
+    // Enhanced error handling for organization issues
+    if (!authLoading && user && userData && userData.organizationMissing) {
+        return (
+            <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+                <div className="text-center max-w-md mx-auto p-6">
+                    <div className="text-6xl mb-4">🏢</div>
+                    <h2 className="text-xl font-bold text-white mb-2">Organization Not Found</h2>
+                    <p className="text-slate-300 mb-4">Your organization could not be found. Please contact support or set up a new organization.</p>
+                    <button
+                        onClick={() => navigate('/organization-setup')}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+                    >
+                        Set Up Organization
+                    </button>
+                </div>
+            </div>
+        )
+    }
+
+    // Enhanced error handling for missing organization ID
+    if (!authLoading && user && userData && !stableOrgId) {
+        return (
+            <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+                <div className="text-center max-w-md mx-auto p-6">
+                    <div className="text-6xl mb-4">🔄</div>
+                    <h2 className="text-xl font-bold text-white mb-2">Loading Organization</h2>
+                    <p className="text-slate-300 mb-4">Setting up your organization access...</p>
+                    <Spinner />
                 </div>
             </div>
         )
@@ -392,12 +592,15 @@ function AdminDashboard() {
                         </div>
                         <p className="text-sm text-slate-400">Emergency Management Control Center • {userData?.role || 'admin'}</p>
                     </div>
-                    <button
-                        onClick={() => navigate('/organization-setup')}
-                        className="rounded-xl bg-slate-700/50 px-4 py-2 text-sm font-semibold text-slate-300 transition-all duration-300 hover:scale-105 hover:bg-slate-600/50 border border-white/10 hover:border-white/20"
-                    >
-                        Change Organization
-                    </button>
+                    <div className="flex items-center gap-4">
+                        <LiveUpdateIndicator />
+                        <button
+                            onClick={() => navigate('/organization-setup')}
+                            className="rounded-xl bg-slate-700/50 px-4 py-2 text-sm font-semibold text-slate-300 transition-all duration-300 hover:scale-105 hover:bg-slate-600/50 border border-white/10 hover:border-white/20"
+                        >
+                            Change Organization
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -585,8 +788,51 @@ function AdminDashboard() {
                 </div>
             </div>
 
+            {/* Recent Admin Logs */}
+            <div className="mt-8 rounded-xl border border-white/10 bg-gradient-to-br from-slate-900/90 to-slate-800/90 p-6 shadow-2xl backdrop-blur-sm">
+                <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <h2 className="text-xl font-bold text-white">Recent Activity & Error Logs</h2>
+                        <p className="text-slate-300 text-sm">Latest actions and errors from your organization</p>
+                    </div>
+                    <span className="text-sm text-slate-400">Showing last 10 logs</span>
+                </div>
+                {logsLoading ? (
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-6 text-center text-slate-300">
+                        Loading logs...
+                    </div>
+                ) : logs.length === 0 ? (
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-6 text-center text-slate-300">
+                        No logs available yet.
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full text-left text-sm">
+                            <thead className="bg-slate-800/70 text-slate-300">
+                                <tr>
+                                    <th className="px-4 py-3 font-semibold uppercase tracking-wide">Time</th>
+                                    <th className="px-4 py-3 font-semibold uppercase tracking-wide">Type</th>
+                                    <th className="px-4 py-3 font-semibold uppercase tracking-wide">Action</th>
+                                    <th className="px-4 py-3 font-semibold uppercase tracking-wide">Message</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/10">
+                                {logs.map((log) => (
+                                    <tr key={log.id} className="hover:bg-slate-900/70">
+                                        <td className="px-4 py-3 text-slate-300">{new Date(log.timestamp?.seconds ? log.timestamp.seconds * 1000 : log.timestamp || Date.now()).toLocaleString()}</td>
+                                        <td className="px-4 py-3 text-slate-300 capitalize">{log.level || 'activity'}</td>
+                                        <td className="px-4 py-3 text-slate-200">{log.action}</td>
+                                        <td className="px-4 py-3 text-slate-300">{log.message}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
             {/* Controls and Emergency Management */}
-            <div className="mt-8 flex items-center justify-between">
+            <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex flex-wrap gap-3">
                     <button
                         onClick={() => setFilter('all')}
@@ -635,8 +881,8 @@ function AdminDashboard() {
 
             {error && <p className="mt-6 rounded-3xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</p>}
 
-            {/* Emergency Cards Grid */}
-            <div className="mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {/* Emergency Cards Grid - Mobile Responsive */}
+            <div className="mt-8 grid gap-4 sm:gap-6 grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
                 {filteredEmergencies.length === 0 ? (
                     <div className="col-span-full rounded-2xl border border-white/10 bg-gradient-to-br from-slate-900/90 to-slate-800/90 p-12 text-center shadow-2xl backdrop-blur-sm">
                         <div className="text-6xl mb-4">🎉</div>
@@ -646,10 +892,10 @@ function AdminDashboard() {
                 ) : (
                     filteredEmergencies.map((emergency) => (
                         <div
-                            key={emergency.id}
-                            className={`group relative overflow-hidden rounded-2xl p-6 shadow-xl backdrop-blur-sm border transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl ${emergency.is_critical
-                                    ? 'bg-gradient-to-br from-red-900/80 to-red-800/80 border-red-500/50 shadow-red-500/20 hover:shadow-red-500/30 animate-pulse'
-                                    : 'bg-gradient-to-br from-slate-800/50 to-slate-900/50 border-white/10 hover:border-white/20 hover:shadow-cyan-500/10'
+                            key={emergency?.id || Math.random()}
+                            className={`group relative overflow-hidden rounded-2xl p-6 shadow-xl backdrop-blur-sm border transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl ${emergency?.is_critical
+                                ? 'bg-gradient-to-br from-red-900/80 to-red-800/80 border-red-500/50 shadow-red-500/20 hover:shadow-red-500/30 animate-pulse'
+                                : 'bg-gradient-to-br from-slate-800/50 to-slate-900/50 border-white/10 hover:border-white/20 hover:shadow-cyan-500/10'
                                 }`}
                         >
                             {/* Critical Alert Banner */}
@@ -677,20 +923,20 @@ function AdminDashboard() {
                             <div className="space-y-4">
                                 <div>
                                     <h3 className="text-lg font-bold text-white group-hover:text-cyan-300 transition-colors duration-300">
-                                        {emergency.title || emergency.emergencyType || 'Emergency'}
+                                        {emergency?.title || emergency?.emergencyType || 'Emergency'}
                                     </h3>
                                     <p className="text-sm text-slate-400 mt-1">
-                                        {emergency.description || 'No description provided'}
+                                        {emergency?.description || 'No description provided'}
                                     </p>
                                 </div>
 
                                 {/* Location & Time */}
-                                <div className="flex items-center justify-between text-sm">
+                                <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                                     <div className="flex items-center gap-2 text-slate-400">
                                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                                             <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
                                         </svg>
-                                        <span>{emergency.locationLabel || emergency.location || 'Location not specified'}</span>
+                                        <span>{emergency?.locationLabel || emergency?.location || 'Location not specified'}</span>
                                     </div>
                                     <div className="flex items-center gap-2 text-slate-400">
                                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -701,29 +947,29 @@ function AdminDashboard() {
                                 </div>
 
                                 {/* User & Assignment */}
-                                <div className="flex items-center justify-between text-sm">
+                                <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                                     <div className="flex items-center gap-2 text-slate-400">
                                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                                             <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />
                                         </svg>
-                                        <span>{emergency.userName || emergency.userId || 'Anonymous'}</span>
+                                        <span>{emergency?.userName || emergency?.userId || 'Anonymous'}</span>
                                     </div>
                                     <div className="flex items-center gap-2 text-slate-400">
                                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                                             <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
-                                        <span>{emergency.assignedStaffName || 'Unassigned'}</span>
+                                        <span>{emergency?.assignedStaffName || 'Unassigned'}</span>
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3 text-sm mt-3 text-slate-400">
                                     <div>
                                         <span className="block">Type</span>
-                                        <span className="text-slate-300 font-medium">{emergency.type || emergency.emergencyType || 'general'}</span>
+                                        <span className="text-slate-300 font-medium">{emergency?.type || emergency?.emergencyType || 'general'}</span>
                                     </div>
                                     <div>
                                         <span className="block">Priority</span>
-                                        <span className={`font-medium ${emergency.priority === 'high' ? 'text-red-300' : emergency.priority === 'low' ? 'text-emerald-300' : 'text-yellow-300'}`}>
-                                            {emergency.priority || 'medium'}
+                                        <span className={`font-medium ${emergency?.priority === 'high' ? 'text-red-300' : emergency?.priority === 'low' ? 'text-emerald-300' : 'text-yellow-300'}`}>
+                                            {emergency?.priority || 'medium'}
                                         </span>
                                     </div>
                                 </div>
@@ -732,7 +978,7 @@ function AdminDashboard() {
                                 )}
                                 <div className="flex items-center justify-between text-sm mt-2">
                                     <span className="text-slate-400">Escalation:</span>
-                                    <span className="text-slate-300 font-medium">{emergency.escalation_level ?? 0}</span>
+                                    <span className="text-slate-300 font-medium">{emergency?.escalation_level ?? 0}</span>
                                 </div>
                                 <div className="flex items-center justify-between text-sm mt-2">
                                     <span className="text-slate-400">SLA Risk</span>
@@ -740,14 +986,14 @@ function AdminDashboard() {
                                         ? 'bg-red-500/10 text-red-300 border border-red-500/20'
                                         : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
                                         }`}>
-                                        {emergency.risk_flag ? 'At Risk' : 'On Track'}
+                                        {emergency?.risk_flag ? 'At Risk' : 'On Track'}
                                     </span>
                                 </div>
-                                {(emergency.events || []).length > 0 && (
+                                {(emergency?.events || []).length > 0 && (
                                     <div className="mt-4 pt-4 border-t border-white/5">
                                         <p className="text-xs font-semibold text-slate-300 mb-2">Timeline</p>
                                         <div className="space-y-1">
-                                            {(emergency.events || []).map((event, idx) => (
+                                            {(emergency?.events || []).map((event, idx) => (
                                                 <div key={idx} className="flex items-start gap-2 text-xs text-slate-400">
                                                     <span className="text-sm">{getEventIcon(event.event_type)}</span>
                                                     <div className="flex-1">
@@ -784,7 +1030,7 @@ function AdminDashboard() {
                                 )}
 
                                 {/* Status & Actions */}
-                                <div className="flex items-center justify-between">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${emergency.status === 'pending'
                                         ? 'bg-gradient-to-r from-yellow-500/20 to-orange-500/20 text-yellow-300 border border-yellow-500/30'
                                         : emergency.status === 'escalated'
@@ -799,7 +1045,17 @@ function AdminDashboard() {
                                         }`}>
                                         {formatEmergencyStatus(emergency.status)}
                                     </span>
-                                    <div className="flex gap-2">
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                        <button
+                                            onClick={() => handleDownloadPDF(emergency)}
+                                            disabled={exportingPdfId === emergency.id}
+                                            className={`rounded-lg px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-all duration-300 hover:scale-105 ${exportingPdfId === emergency.id
+                                                ? 'bg-slate-500/70 cursor-not-allowed shadow-slate-500/20'
+                                                : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-500/30 hover:shadow-emerald-500/50'
+                                                }`}
+                                        >
+                                            {exportingPdfId === emergency.id ? 'Generating PDF...' : 'Download PDF'}
+                                        </button>
                                         {emergency.status !== 'resolved' && (
                                             <button
                                                 onClick={() => handleUpdateStatus(emergency.id, emergency.status === 'accepted' ? 'in_progress' : 'resolved')}
@@ -813,11 +1069,11 @@ function AdminDashboard() {
 
                                 {/* Timeline */}
                                 <div className="mt-4">
-                                    {(emergency.recommendations || []).length > 0 && (
+                                    {(emergency?.recommendations || []).length > 0 && (
                                         <div className="mb-4">
                                             <p className="text-xs font-semibold text-slate-300 mb-2">Recommended Actions</p>
                                             <div className="space-y-1">
-                                                {(emergency.recommendations || []).map((recommendation, idx) => (
+                                                {(emergency?.recommendations || []).map((recommendation, idx) => (
                                                     <div key={idx} className="flex items-start gap-2 text-xs text-slate-400">
                                                         <span className="text-sm">📋</span>
                                                         <span className="text-slate-300">{recommendation}</span>
@@ -834,6 +1090,13 @@ function AdminDashboard() {
                 )}
             </div>
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+            {realtimeToast && (
+                <RealtimeToast
+                    message={realtimeToast.message}
+                    type={realtimeToast.type}
+                    onClose={() => setRealtimeToast(null)}
+                />
+            )}
         </div>
     )
 }

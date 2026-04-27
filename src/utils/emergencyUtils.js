@@ -46,6 +46,57 @@ export const getPriorityColor = (priority) => {
     return colors[priority] || 'text-slate-300'
 }
 
+/**
+ * Safely extracts timestamp in milliseconds from various date formats
+ * Handles Firestore timestamps, Date objects, strings, and null/undefined
+ * @param {any} dateValue - The date value to extract timestamp from
+ * @returns {number} - Timestamp in milliseconds, or 0 if invalid
+ */
+export const safeGetTimestamp = (dateValue) => {
+    if (!dateValue) return 0
+
+    // Firestore timestamp object
+    if (typeof dateValue === 'object' && typeof dateValue.seconds === 'number') {
+        return dateValue.seconds * 1000 + (dateValue.nanoseconds || 0) / 1000000
+    }
+
+    // Date object
+    if (dateValue instanceof Date) {
+        return dateValue.getTime()
+    }
+
+    // String or number
+    if (typeof dateValue === 'string' || typeof dateValue === 'number') {
+        const parsed = new Date(dateValue)
+        return isNaN(parsed.getTime()) ? 0 : parsed.getTime()
+    }
+
+    return 0
+}
+
+/**
+ * Enhanced priority color with pattern detection highlighting
+ * @param {string} priority - Incident priority (high, medium, low)
+ * @param {boolean} patternDetected - Whether pattern was detected
+ * @returns {string} Tailwind CSS classes
+ */
+export const getEnhancedPriorityColor = (priority, patternDetected = false) => {
+    const baseColors = {
+        'high': 'text-red-300 bg-red-500/10',
+        'medium': 'text-yellow-300 bg-yellow-500/10',
+        'low': 'text-green-300 bg-green-500/10'
+    }
+
+    const baseColor = baseColors[priority?.toLowerCase()] || baseColors['medium']
+
+    // Add pattern detection highlighting
+    if (patternDetected) {
+        return `${baseColor} ring-2 ring-orange-400/50 ring-offset-1 ring-offset-slate-900`
+    }
+
+    return baseColor
+}
+
 export const getResponseTime = (createdAt) => {
     if (!createdAt) return 'Unknown'
     const now = Date.now()

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useBrowserNotifications } from '../hooks/useBrowserNotifications'
 import { useUser } from '../UserContext.jsx'
 import Toast from '../components/Toast.jsx'
 import OfflineIndicator from '../components/OfflineIndicator.jsx'
 import Spinner from '../components/Spinner.jsx'
 import EmergencyMap from '../components/EmergencyMap.jsx'
 import StatusTimeline from '../components/StatusTimeline.jsx'
+import { LiveUpdateIndicator, RealtimeToast } from '../components/RealtimeIndicator.jsx'
 import {
     formatEmergencyStatus,
     getPriority,
@@ -18,17 +20,22 @@ import {
     getEventIcon
 } from '../utils/emergencyUtils.js'
 import { acceptCase, fetchEmergencies, updateEmergencyStatus, updateStaffLocation } from '../utils/emergencyService.js'
+import { generateIncidentPDF } from '../utils/pdfService.js'
+import { socketService } from '../utils/socketService.js'
 
 function StaffDashboard() {
     const [emergencies, setEmergencies] = useState([])
     const [error, setError] = useState('')
     const [assignedOnly, setAssignedOnly] = useState(false)
     const [stableOrgId, setStableOrgId] = useState(null)
+    const { requestPermission } = useBrowserNotifications()
     const { user, userData, loading: authLoading } = useUser()
     const navigate = useNavigate()
     const [toast, setToast] = useState(null)
+    const [realtimeToast, setRealtimeToast] = useState(null)
     const [currentBuilding, setCurrentBuilding] = useState('')
     const [currentFloor, setCurrentFloor] = useState('')
+    const [exportingPdfId, setExportingPdfId] = useState(null)
     const previousCountRef = useRef(0)
     const normalizedOrgId = normalizeOrganizationId(userData?.organizationId || '')
 
@@ -48,6 +55,10 @@ function StaffDashboard() {
             navigate('/organization-setup')
         }
     }, [authLoading, user, normalizedOrgId, navigate])
+
+    useEffect(() => {
+        requestPermission()
+    }, [requestPermission])
 
     useEffect(() => {
         if (userData?.current_location) {
@@ -98,6 +109,70 @@ function StaffDashboard() {
             setError(`Query error: ${err.message}`)
         }
     }, [authLoading, stableOrgId, user?.uid, userData])
+
+    // Initialize socket connection and listen for real-time updates
+    useEffect(() => {
+        if (!stableOrgId || !user?.uid) return
+
+        const setupSocket = async () => {
+            try {
+                // Connect to socket server
+                await socketService.connect(
+                    import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'
+                )
+
+                // Join organization room
+                socketService.joinOrganization(stableOrgId, user.uid, userData?.role || 'staff')
+
+                // Listen for new incidents
+                socketService.onIncidentCreated((incident) => {
+                    console.log('📋 Real-time: New incident', incident)
+                    setRealtimeToast({
+                        message: `New Incident: ${incident.title || incident.emergencyType}`,
+                        type: 'info'
+                    })
+                    // Firestore listener will automatically update the list
+                })
+
+                // Listen for incident updates
+                socketService.onIncidentUpdated((incident) => {
+                    console.log('✏️ Real-time: Incident updated', incident)
+                    setRealtimeToast({
+                        message: `Status Updated: ${incident.status}`,
+                        type: 'success'
+                    })
+                })
+
+                // Listen for incident assignments
+                socketService.onIncidentAssigned((assignment) => {
+                    console.log('👤 Real-time: Incident assigned', assignment)
+                    setRealtimeToast({
+                        message: `Assigned to: ${assignment.assignedStaffName || 'Staff'}`,
+                        type: 'info'
+                    })
+                })
+
+                // Listen for escalations
+                socketService.onIncidentEscalated((escalation) => {
+                    console.log('🚨 Real-time: Incident escalated', escalation)
+                    setRealtimeToast({
+                        message: `⚠️ Critical: ${escalation.title || escalation.emergencyType}`,
+                        type: 'warning'
+                    })
+                })
+
+            } catch (error) {
+                console.warn('Socket connection failed, using fallback:', error)
+                // Firestore listeners will continue to work as fallback
+            }
+        }
+
+        setupSocket()
+
+        return () => {
+            socketService.disconnect()
+        }
+    }, [stableOrgId, user?.uid, userData?.role])
 
     const actor = {
         uid: user?.uid,
@@ -296,6 +371,22 @@ function StaffDashboard() {
         }
     }
 
+    const handleDownloadPDF = async (emergency) => {
+        if (!emergency) return
+
+        setExportingPdfId(emergency.id)
+        try {
+            generateIncidentPDF(emergency)
+            setToast({ message: 'Incident PDF downloaded', type: 'success' })
+        } catch (pdfError) {
+            console.error('Failed to generate incident PDF', pdfError)
+            setError('Unable to generate PDF. Please try again.')
+            setToast({ message: 'PDF export failed', type: 'error' })
+        } finally {
+            setExportingPdfId(null)
+        }
+    }
+
     const handleUpdateLocation = async () => {
         if (!user?.uid) {
             setError('Please log in to update your location.')
@@ -376,6 +467,7 @@ function StaffDashboard() {
                         <p className="text-sm text-slate-400">Emergency Response Team • {userData?.role || 'staff'}</p>
                     </div>
                     <div className="flex items-center gap-3">
+                        <LiveUpdateIndicator />
                         <button
                             onClick={() => setAssignedOnly((prev) => !prev)}
                             className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all duration-300 hover:scale-105 border ${assignedOnly
@@ -396,7 +488,7 @@ function StaffDashboard() {
             </div>
 
             {/* Stats Cards */}
-            <div className="mt-8 grid gap-6 sm:grid-cols-3">
+            <div className="mt-8 grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
                 <div className="rounded-xl border border-white/10 bg-gradient-to-br from-slate-900/80 to-slate-800/80 p-6 text-center shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
                     <div className="text-4xl font-bold text-blue-400 mb-2">{assignedCount}</div>
                     <p className="text-slate-300 font-medium">My Assignments</p>
@@ -420,7 +512,7 @@ function StaffDashboard() {
                     <h2 className="text-xl font-bold text-white">Update Your Current Location</h2>
                     <p className="text-slate-300 text-sm">Share your floor and building so the admin can route incidents faster.</p>
                 </div>
-                <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     <div>
                         <label className="block text-sm font-semibold text-slate-200 mb-2">Building</label>
                         <input
@@ -491,8 +583,8 @@ function StaffDashboard() {
                             const incidentTitle = emergency.title || emergency.emergencyType || 'Untitled Incident'
                             return (
                                 <div key={emergency.id} className={`rounded-xl border p-6 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 ${emergency.is_critical
-                                        ? 'bg-gradient-to-br from-red-900/80 to-red-800/80 border-red-500/50 shadow-red-500/20 animate-pulse'
-                                        : 'bg-gradient-to-br from-slate-950/80 to-slate-900/80 border-white/10'
+                                    ? 'bg-gradient-to-br from-red-900/80 to-red-800/80 border-red-500/50 shadow-red-500/20 animate-pulse'
+                                    : 'bg-gradient-to-br from-slate-950/80 to-slate-900/80 border-white/10'
                                     }`}>
                                     {/* Critical Alert Banner */}
                                     {emergency.is_critical && (
@@ -562,7 +654,7 @@ function StaffDashboard() {
                                             )}
                                         </div>
                                         <div className="flex flex-col gap-3 sm:ml-6">
-                                            <div className="flex flex-col gap-2">
+                                            <div className="flex flex-col gap-3">
                                                 {(emergency.status === 'pending' && !emergency.assignedStaffId) || (emergency.status === 'assigned' && emergency.assignedStaffId === user?.uid) ? (
                                                     <button
                                                         onClick={() => handleAcceptCase(emergency.id)}
@@ -587,6 +679,16 @@ function StaffDashboard() {
                                                         Mark Resolved
                                                     </button>
                                                 )}
+                                                <button
+                                                    onClick={() => handleDownloadPDF(emergency)}
+                                                    disabled={exportingPdfId === emergency.id}
+                                                    className={`w-full sm:w-auto rounded-xl px-6 py-3 text-sm font-bold text-white shadow-lg transition-all duration-300 hover:scale-105 ${exportingPdfId === emergency.id
+                                                        ? 'bg-slate-500/70 cursor-not-allowed shadow-slate-500/20'
+                                                        : 'bg-gradient-to-r from-emerald-500 to-teal-600 shadow-emerald-500/30 hover:shadow-emerald-500/50'
+                                                        }`}
+                                                >
+                                                    {exportingPdfId === emergency.id ? 'Generating PDF...' : 'Download PDF'}
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
@@ -627,6 +729,13 @@ function StaffDashboard() {
                 )}
             </div>
             {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+            {realtimeToast && (
+                <RealtimeToast
+                    message={realtimeToast.message}
+                    type={realtimeToast.type}
+                    onClose={() => setRealtimeToast(null)}
+                />
+            )}
         </div>
     )
 }
